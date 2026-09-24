@@ -3,13 +3,17 @@ import { runPoolTests } from './pool.test.js';
 import { runRequestClientTests } from './requestClient.test.js';
 import { runTargetPolicyTests } from './targetPolicy.test.js';
 import { runGlobalCapacityTests } from './globalCapacity.test.js';
+import { runStateStoreTests } from './stateStore.test.js';
+import { runAuthTests } from './auth.test.js';
 
 const tests = [
-  ['scheduler', runSchedulerTests],
+  ['scheduler-smart-even-custom', runSchedulerTests],
   ['worker-pool', runPoolTests],
   ['request-client', runRequestClientTests],
   ['target-policy', runTargetPolicyTests],
-  ['global-capacity', runGlobalCapacityTests]
+  ['global-capacity', runGlobalCapacityTests],
+  ['state-persistence', runStateStoreTests],
+  ['auth-roles', runAuthTests]
 ];
 
 let passed = 0;

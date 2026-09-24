@@ -3,20 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Scheduled Loadtest Dashboard</title>
+  <title>Campaign Scheduler Dashboard</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <main class="wrap">
     <header>
       <div>
-        <h1>Scheduled Loadtest Dashboard</h1>
-        <p>Campaign theo giờ · Smart / Đồng đều · Worker pool giới hạn</p>
+        <h1>Campaign Scheduler Dashboard</h1>
+        <p>Smart · Đồng đều · Custom · Worker pool · Persist trạng thái</p>
       </div>
-      <span class="badge">request-only</span>
+      <div class="header-actions"><span id="user-badge" class="badge">...</span><button id="logout" class="secondary compact">Đăng xuất</button></div>
     </header>
 
-    <section class="card">
+    <section id="create-card" class="card">
       <h2>Tạo campaign</h2>
       <form id="campaign-form">
         <div class="grid">
@@ -27,9 +27,23 @@
           <label>Tổng request<input id="targetRequests" type="number" min="1" value="750" required></label>
           <label>Concurrency<input id="concurrency" type="number" min="1" value="10" required></label>
           <label>Chế độ
-            <select id="mode"><option value="smart">Smart</option><option value="even">Đồng đều</option></select>
+            <select id="mode"><option value="smart">Smart</option><option value="even">Đồng đều</option><option value="custom">Custom</option></select>
           </label>
         </div>
+
+        <div id="custom-panel" class="custom-panel hidden">
+          <h3>Custom theo khung giờ</h3>
+          <div class="grid custom-grid">
+            <label>00–06<select data-custom="night"><option value="low">Thấp</option><option value="medium">Vừa</option><option value="high">Cao</option></select></label>
+            <label>06–09<select data-custom="early_morning"><option value="low">Thấp</option><option value="medium" selected>Vừa</option><option value="high">Cao</option></select></label>
+            <label>09–12<select data-custom="morning"><option value="low">Thấp</option><option value="medium">Vừa</option><option value="high" selected>Cao</option></select></label>
+            <label>12–14<select data-custom="noon"><option value="low">Thấp</option><option value="medium" selected>Vừa</option><option value="high">Cao</option></select></label>
+            <label>14–18<select data-custom="afternoon"><option value="low">Thấp</option><option value="medium">Vừa</option><option value="high" selected>Cao</option></select></label>
+            <label>18–22<select data-custom="evening"><option value="low">Thấp</option><option value="medium">Vừa</option><option value="high" selected>Cao</option></select></label>
+            <label>22–24<select data-custom="late_night"><option value="low">Thấp</option><option value="medium" selected>Vừa</option><option value="high">Cao</option></select></label>
+          </div>
+        </div>
+
         <div id="preview" class="preview"></div>
         <button>Tạo campaign</button>
         <span id="error" class="error"></span>
@@ -37,7 +51,7 @@
     </section>
 
     <section class="card">
-      <div class="title-row"><h2>Campaigns</h2><button id="refresh" class="secondary">Làm mới</button></div>
+      <div class="title-row"><h2>Campaigns</h2><button id="refresh" class="secondary compact">Làm mới</button></div>
       <div id="campaigns" class="campaigns"></div>
     </section>
 
@@ -47,6 +61,6 @@
     </section>
   </main>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/app.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

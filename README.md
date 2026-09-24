@@ -1,45 +1,65 @@
-# Scheduled Loadtest Dashboard
+# Campaign Scheduler Dashboard
 
-A small Node.js dashboard for **authorized HTTP load testing**. It was designed after reviewing the MIT-licensed [`alexfernandez/loadtest`](https://github.com/alexfernandez/loadtest) project, especially its client-pool and concurrency model, then adapted to add scheduled campaigns and a hard concurrency ceiling suitable for a small VPS.
+Node.js dashboard cho **kiểm thử HTTP có ủy quyền**, được thiết kế theo yêu cầu đề tài campaign scheduler: nhiều campaign, phân phối theo thời gian, concurrency, lưu trạng thái, thống kê và phân quyền.
 
-## What is implemented
+## Chức năng hiện có
 
-- Web dashboard for creating campaigns.
-- Start/end timestamps.
-- Exact target request count.
-- Smart or even hourly distribution.
-- Timezone-aware Smart scheduling.
-- Capped async worker pool with a **global** concurrency ceiling across all campaigns (default 20; default per campaign 10).
-- HTTP keep-alive and response streaming/discarding to keep RAM use low.
-- Live Socket.IO stats and logs.
-- Hard end-time cutoff: no new work is dispatched after the campaign window.
-- External targets are denied unless their exact hostname is listed in `ALLOWED_TARGET_HOSTS`.
-- Local smoke-test endpoint for development.
+- Nhiều campaign chạy độc lập.
+- Thời gian bắt đầu/kết thúc chính xác, timezone từ trình duyệt.
+- Tổng số request mục tiêu theo campaign.
+- 3 chế độ phân phối: **Smart**, **Đồng đều (Even)**, **Custom** theo 7 khung giờ.
+- Case chuẩn 750 request từ 07:00–13:00: Even = 125 mỗi giờ; Smart = 86/114/152/161/142/95.
+- Worker pool async, giới hạn concurrency theo campaign và **global cap** để phù hợp VPS 1 vCPU / 1 GB RAM.
+- Retry có backoff, retry chỉ diễn ra trước giờ kết thúc; không chạy bù sau deadline.
+- HTTP keep-alive, response được drain thay vì giữ body trong RAM.
+- Persist runtime state vào JSON: restart VPS không làm mất `scheduleIdx`, số lần thử, slot thành công/thất bại và retry đang chờ.
+- Sau restart, job đang in-flight được đưa lại vào retry queue thay vì coi như đã hoàn tất.
+- Dashboard realtime bằng Socket.IO: success, attempted, failed attempts, retry, active workers, p95 latency.
+- Báo cáo `.txt` cho từng campaign.
+- Role **admin / guest**: guest chỉ xem, admin được tạo/dừng campaign.
+- Telegram notification tùy chọn qua biến môi trường.
+- Target ngoài máy local phải nằm trong `ALLOWED_TARGET_HOSTS`.
 
-## Small VPS defaults
+## Cấu hình VPS 1 core / 1 GB
 
-For 1 vCPU / 1 GB RAM, start with request-only mode and campaign concurrency 10. Raise gradually only after checking CPU, RAM, error rate and latency.
+Bắt đầu với `MAX_CONCURRENCY=20`, mỗi campaign khoảng 10 worker. Nếu CPU/RAM/latency tăng mạnh thì hạ giới hạn. App này dùng HTTP request-only, không mở Chromium.
 
-## Install
+## Cài đặt
 
 ```bash
 npm install
 cp .env.example .env
-# export values from .env in your process manager or shell
 npm test
 npm start
 ```
 
-The server binds to `127.0.0.1:3005` by default. Use nginx/caddy plus authentication if you expose it on a VPS.
-
-## Authorized targets
-
-External targets are disabled until you set exact hostnames you own or are authorized to test:
+Mặc định bind `127.0.0.1:3005`. Nếu public qua nginx/caddy, bật auth:
 
 ```bash
-ALLOWED_TARGET_HOSTS=staging.example.com,api.staging.example.com npm start
+AUTH_ENABLED=true
+ADMIN_USER=your-admin
+ADMIN_PASSWORD=strong-password
+GUEST_USER=viewer
+GUEST_PASSWORD=another-password
 ```
 
-## Git/upstream
+## Target được phép test
 
-This repository is the customized dashboard. `UPSTREAM.md` records the MIT-licensed upstream revision that was studied for the pool/concurrency architecture.
+```bash
+ALLOWED_TARGET_HOSTS=staging.example.com,api.staging.example.com
+```
+
+Chỉ thêm hostname mà bạn sở hữu hoặc có quyền kiểm thử.
+
+## Telegram
+
+```bash
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_IDS=123456789,-100123456789
+```
+
+Token không được hard-code vào source.
+
+## Upstream
+
+Xem `UPSTREAM.md`. Kiến trúc pool/concurrency tham khảo từ `alexfernandez/loadtest` (MIT), sau đó được thay đổi cho scheduler nhiều campaign và global concurrency cap.
