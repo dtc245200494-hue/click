@@ -29,7 +29,8 @@ function render() {
         <span><b>${c.attempted}</b>/${c.targetRequests} sent</span>
         <span><b>${c.success}</b> success</span>
         <span><b>${c.failed}</b> fail</span>
-        <span><b>${c.activeWorkers}</b> active</span>
+        <span><b>${c.activeWorkers}</b> active campaign</span>
+        <span><b>${c.globalActiveWorkers ?? 0}</b>/${c.globalMaxConcurrency ?? '--'} global</span>
         <span>p95 <b>${c.p95ApproxMs ?? '--'}</b> ms</span>
       </div>
       <div class="bar"><i style="width:${Math.min(100, c.targetRequests ? c.attempted / c.targetRequests * 100 : 0)}%"></i></div>

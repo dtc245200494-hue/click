@@ -9,7 +9,7 @@ A small Node.js dashboard for **authorized HTTP load testing**. It was designed 
 - Exact target request count.
 - Smart or even hourly distribution.
 - Timezone-aware Smart scheduling.
-- Capped async worker pool (default max 20 globally configurable; default per campaign 10).
+- Capped async worker pool with a **global** concurrency ceiling across all campaigns (default 20; default per campaign 10).
 - HTTP keep-alive and response streaming/discarding to keep RAM use low.
 - Live Socket.IO stats and logs.
 - Hard end-time cutoff: no new work is dispatched after the campaign window.
@@ -42,4 +42,4 @@ ALLOWED_TARGET_HOSTS=staging.example.com,api.staging.example.com npm start
 
 ## Git/upstream
 
-The local source was adapted from architectural ideas in `alexfernandez/loadtest` (MIT). See `UPSTREAM.md` for the inspected upstream revision.
+This repository is the customized dashboard. `UPSTREAM.md` records the MIT-licensed upstream revision that was studied for the pool/concurrency architecture.

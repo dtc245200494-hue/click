@@ -9,6 +9,7 @@ import { buildDistribution, generateSchedule } from './lib/scheduler.js';
 import { validateTargetUrl } from './lib/targetPolicy.js';
 import { requestOnce } from './lib/requestClient.js';
 import { RequestPool } from './lib/requestPool.js';
+import { countActiveWorkers, getGlobalFreeSlots } from './lib/capacity.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -44,6 +45,8 @@ function publicCampaign(c) {
     success: c.success,
     failed: c.failed,
     activeWorkers: c.pool.active,
+    globalActiveWorkers: countActiveWorkers(campaigns.values()),
+    globalMaxConcurrency: MAX_CONCURRENCY,
     pendingWorkers: c.pool.queue.length,
     p50ApproxMs: percentile(c.latencies, 0.50),
     p95ApproxMs: percentile(c.latencies, 0.95)
@@ -149,7 +152,6 @@ app.get('/api/preview', (req, res) => {
   res.json(dist);
 });
 
-// Local-only endpoint used for smoke tests. It is never an external traffic target.
 app.get('/__local_test_target', (_req, res) => res.status(200).send('ok'));
 
 async function runSlot(c) {
@@ -187,8 +189,8 @@ async function tickCampaign(c) {
       return;
     }
 
-    // Backpressure: never queue more work than the pool can immediately accept.
-    let capacity = c.pool.freeSlots;
+    const globalFreeSlots = getGlobalFreeSlots(campaigns.values(), MAX_CONCURRENCY);
+    let capacity = Math.min(c.pool.freeSlots, globalFreeSlots);
     while (capacity > 0 && c.scheduleIdx < c.schedule.length && c.schedule[c.scheduleIdx] <= now) {
       c.scheduleIdx += 1;
       c.pool.enqueue(() => runSlot(c));

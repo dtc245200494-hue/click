@@ -2,12 +2,14 @@ import { runSchedulerTests } from './scheduler.test.js';
 import { runPoolTests } from './pool.test.js';
 import { runRequestClientTests } from './requestClient.test.js';
 import { runTargetPolicyTests } from './targetPolicy.test.js';
+import { runGlobalCapacityTests } from './globalCapacity.test.js';
 
 const tests = [
   ['scheduler', runSchedulerTests],
   ['worker-pool', runPoolTests],
   ['request-client', runRequestClientTests],
-  ['target-policy', runTargetPolicyTests]
+  ['target-policy', runTargetPolicyTests],
+  ['global-capacity', runGlobalCapacityTests]
 ];
 
 let passed = 0;
