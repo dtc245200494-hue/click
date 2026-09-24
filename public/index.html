@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Scheduled Loadtest Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div>
+        <h1>Scheduled Loadtest Dashboard</h1>
+        <p>Campaign theo giờ · Smart / Đồng đều · Worker pool giới hạn</p>
+      </div>
+      <span class="badge">request-only</span>
+    </header>
+
+    <section class="card">
+      <h2>Tạo campaign</h2>
+      <form id="campaign-form">
+        <div class="grid">
+          <label>Tên<input id="name" placeholder="VD: staging morning"></label>
+          <label>Target URL<input id="targetUrl" type="url" value="http://127.0.0.1:3005/__local_test_target" required></label>
+          <label>Bắt đầu<input id="startTime" type="datetime-local" required></label>
+          <label>Kết thúc<input id="endTime" type="datetime-local" required></label>
+          <label>Tổng request<input id="targetRequests" type="number" min="1" value="750" required></label>
+          <label>Concurrency<input id="concurrency" type="number" min="1" value="10" required></label>
+          <label>Chế độ
+            <select id="mode"><option value="smart">Smart</option><option value="even">Đồng đều</option></select>
+          </label>
+        </div>
+        <div id="preview" class="preview"></div>
+        <button>Tạo campaign</button>
+        <span id="error" class="error"></span>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="title-row"><h2>Campaigns</h2><button id="refresh" class="secondary">Làm mới</button></div>
+      <div id="campaigns" class="campaigns"></div>
+    </section>
+
+    <section class="card">
+      <h2>Log gần nhất</h2>
+      <div id="logs" class="logs"></div>
+    </section>
+  </main>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

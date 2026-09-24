@@ -1,0 +1,19 @@
+{
+  "name": "scheduled-loadtest-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Scheduled HTTP load-test dashboard derived from ideas in alexfernandez/loadtest, with campaign scheduling and capped concurrency.",
+  "license": "MIT",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/all.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "socket.io": "^4.8.3"
+  }
+}
