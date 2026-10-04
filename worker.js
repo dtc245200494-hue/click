@@ -190,7 +190,7 @@ function calculateAdaptiveNextInterval({ now = Date.now(), endTime, remainingReq
     return { valid: true, timeRemainingMs, remainingRequests, idealIntervalMs: Math.round(idealIntervalMs), jitteredIntervalMs, quotaCurrentSlice: Number(currentSliceQuota.toFixed(2)), currentRatePerHour, currentHour: currentSlice.hour, currentHourWeight: currentSlice.baseW };
 }
 
-// ─── State & Storage Helpers ──────────────────────────────────────────────────
+// ─── Utility Helpers ──────────────────────────────────────────────────────────
 
 function formatVnTime(ms = Date.now()) {
     const d = new Date(ms + 7 * 3600000);
@@ -200,35 +200,9 @@ function formatVnTime(ms = Date.now()) {
     return `${hh}:${mm}:${ss}`;
 }
 
-// In-memory fallback when KV binding is not attached (pure empty map, no hardcoded sample)
+// In-memory fallback when neither DO nor KV is attached
 let memoryCampaigns = new Map();
 let lastCronState = null;
-
-async function getCampaigns(env) {
-    if (env && env.CAMPAIGNS_KV) {
-        try {
-            const list = await env.CAMPAIGNS_KV.get('campaigns_list', 'json');
-            if (Array.isArray(list)) return list;
-            return [];
-        } catch (e) {
-            console.error('[KV] Error reading campaigns:', e.message);
-            return [];
-        }
-    }
-    return Array.from(memoryCampaigns.values());
-}
-
-async function saveCampaigns(env, campaignsList) {
-    if (env && env.CAMPAIGNS_KV) {
-        try {
-            await env.CAMPAIGNS_KV.put('campaigns_list', JSON.stringify(campaignsList));
-        } catch (e) {
-            console.error('[KV] Error saving campaigns:', e.message);
-        }
-    } else {
-        memoryCampaigns = new Map(campaignsList.map(c => [String(c.id), c]));
-    }
-}
 
 // ─── HTTP Subrequest Runner ───────────────────────────────────────────────────
 
@@ -257,111 +231,484 @@ async function executeWorkerRequest(url, timeoutMs = 8000) {
     }
 }
 
-// ─── Cron Trigger Handler ─────────────────────────────────────────────────────
+// ─── Cloudflare Durable Object: CampaignRunnerDO ─────────────────────────────
+// Strongly consistent storage + precision Alarms API for organic Smart/Even pacing
 
-async function handleScheduled(event, env, ctx) {
-    const now = Date.now();
-    const viTime = formatVnTime(now);
-    const campaignsList = await getCampaigns(env);
-    let changed = false;
-    let totalProcessed = 0;
-    let totalDispatchedInRun = 0;
+export class CampaignRunnerDO {
+    constructor(ctx, env) {
+        this.ctx = ctx;
+        this.env = env;
+        this.storage = ctx.storage;
+    }
 
-    for (const c of campaignsList) {
-        if (['stopped', 'completed', 'expired', 'paused'].includes(c.status)) continue;
-
-        if (c.status === 'waiting') {
-            if (now >= c.startTime) {
-                c.status = 'running';
-                c.actualStartTime = now;
-                changed = true;
-            } else {
-                continue;
+    async alarm() {
+        try {
+            const campaign = await this.storage.get('campaign');
+            if (!campaign) {
+                await this.storage.deleteAlarm();
+                return;
             }
-        }
 
-        if (now >= c.endTime) {
-            c.status = (c.successRequests || 0) >= c.targetRequests ? 'completed' : 'expired';
-            c.actualEndTime = now;
-            changed = true;
-            continue;
-        }
+            if (['stopped', 'completed', 'expired', 'paused'].includes(campaign.status)) {
+                await this.storage.deleteAlarm();
+                return;
+            }
 
-        const remaining = c.targetRequests - (c.successRequests || 0);
-        if (remaining <= 0) {
-            c.status = 'completed';
-            c.actualEndTime = now;
-            changed = true;
-            continue;
-        }
+            const now = Date.now();
 
-        const adaptive = calculateAdaptiveNextInterval({
-            now,
-            endTime: c.endTime,
-            remainingRequests: remaining,
-            mode: c.scheduleMode || 'smart',
-            timezoneOffsetMinutes: c.timezoneOffsetMinutes
-        });
-        if (!adaptive.valid) continue;
+            // Check if waiting for start time
+            if (campaign.status === 'waiting') {
+                if (now >= campaign.startTime) {
+                    campaign.status = 'running';
+                    campaign.actualStartTime = now;
+                } else {
+                    await this.storage.setAlarm(campaign.startTime);
+                    return;
+                }
+            }
 
-        const targetRatePerMinute = adaptive.currentRatePerHour / 60;
-        let minuteQuota = Math.round(targetRatePerMinute);
-        if (targetRatePerMinute > 0 && minuteQuota === 0) minuteQuota = 1;
-        minuteQuota = Math.min(remaining, Math.max(1, minuteQuota));
-        const maxBatch = Math.min(minuteQuota, c.maxConcurrent || 3, 5);
+            // Check if campaign duration ended
+            if (now >= campaign.endTime) {
+                campaign.status = (campaign.successRequests || 0) >= campaign.targetRequests ? 'completed' : 'expired';
+                campaign.actualEndTime = now;
+                await this.storage.put('campaign', campaign);
+                await this.storage.deleteAlarm();
+                return;
+            }
 
-        totalProcessed++;
+            const remaining = campaign.targetRequests - (campaign.successRequests || 0);
+            if (remaining <= 0) {
+                campaign.status = 'completed';
+                campaign.actualEndTime = now;
+                await this.storage.put('campaign', campaign);
+                await this.storage.deleteAlarm();
+                return;
+            }
 
-        for (let i = 0; i < maxBatch; i++) {
-            if ((c.successRequests || 0) >= c.targetRequests) break;
-
-            const res = await executeWorkerRequest(c.targetUrl, c.timeoutMs || 8000);
+            // Execute 1 HTTP request with organic Keep-Alive
+            const res = await executeWorkerRequest(campaign.targetUrl, campaign.timeoutMs || 8000);
             const reqNow = Date.now();
             const reqViTime = formatVnTime(reqNow);
 
-            c.totalDispatched = (c.totalDispatched || 0) + 1;
-            totalDispatchedInRun++;
-
+            campaign.totalDispatched = (campaign.totalDispatched || 0) + 1;
             if (res.success) {
-                c.successRequests = (c.successRequests || 0) + 1;
+                campaign.successRequests = (campaign.successRequests || 0) + 1;
             } else {
-                c.failedRequests = (c.failedRequests || 0) + 1;
+                campaign.failedRequests = (campaign.failedRequests || 0) + 1;
             }
 
-            c.lastCronRun = now;
-            c.lastCronRunText = viTime;
-            c.lastRequestTime = reqNow;
-            c.lastRequestText = reqViTime;
-            c.lastStatusCode = res.statusCode;
-            c.lastLatencyMs = res.latencyMs;
-            c.lastError = res.error || null;
+            campaign.lastAlarmRun = reqNow;
+            campaign.lastAlarmRunText = reqViTime;
+            campaign.lastRequestTime = reqNow;
+            campaign.lastRequestText = reqViTime;
+            campaign.lastStatusCode = res.statusCode;
+            campaign.lastLatencyMs = res.latencyMs;
+            campaign.lastError = res.error || null;
 
-            if (!Array.isArray(c.recentLogs)) c.recentLogs = [];
-            c.recentLogs.push({
+            if (!Array.isArray(campaign.recentLogs)) campaign.recentLogs = [];
+            campaign.recentLogs.push({
                 timestamp: reqViTime,
                 statusCode: res.statusCode,
                 latencyMs: res.latencyMs,
                 success: res.success,
                 text: res.success
-                    ? `[${res.statusCode} OK] ${c.targetUrl} (${res.latencyMs}ms)`
+                    ? `[${res.statusCode} OK] ${campaign.targetUrl} (${res.latencyMs}ms)`
                     : `[Lỗi] ${res.error} (${res.latencyMs}ms)`
             });
-            if (c.recentLogs.length > 30) c.recentLogs.shift();
-            changed = true;
-        }
+            if (campaign.recentLogs.length > 40) campaign.recentLogs.shift();
 
-        if ((c.successRequests || 0) >= c.targetRequests) {
-            c.status = 'completed';
-            c.actualEndTime = now;
-            changed = true;
+            // Check if finished right now
+            if ((campaign.successRequests || 0) >= campaign.targetRequests) {
+                campaign.status = 'completed';
+                campaign.actualEndTime = reqNow;
+                await this.storage.put('campaign', campaign);
+                await this.storage.deleteAlarm();
+                return;
+            }
+
+            // Calculate next adaptive interval for Smart / Even
+            const newRemaining = campaign.targetRequests - (campaign.successRequests || 0);
+            const adaptive = calculateAdaptiveNextInterval({
+                now: reqNow,
+                endTime: campaign.endTime,
+                remainingRequests: newRemaining,
+                mode: campaign.scheduleMode || 'smart',
+                timezoneOffsetMinutes: campaign.timezoneOffsetMinutes
+            });
+
+            // Persist strongly consistent state in Durable Object
+            await this.storage.put('campaign', campaign);
+
+            // Reschedule alarm for the natural organic interval
+            let nextIntervalMs = adaptive.jitteredIntervalMs || 5000;
+            // Floor at 1000ms (1s), ceiling at time left before endTime
+            nextIntervalMs = Math.max(1000, Math.min(nextIntervalMs, Math.max(1000, campaign.endTime - reqNow)));
+            const nextAlarmTime = reqNow + nextIntervalMs;
+            await this.storage.setAlarm(nextAlarmTime);
+        } catch (err) {
+            console.error('[DO Alarm Error]:', err.message);
+            try {
+                await this.storage.setAlarm(Date.now() + 5000);
+            } catch (_) {}
         }
     }
 
-    if (changed) {
-        await saveCampaigns(env, campaignsList);
+    async fetch(request) {
+        const url = new URL(request.url);
+        const path = url.pathname;
+
+        // 1. Registry operations (for idFromName('system:registry'))
+        if (path === '/registry/get-ids') {
+            const ids = await this.storage.get('campaign_ids') || [];
+            return new Response(JSON.stringify(ids), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (path === '/registry/add-id' && request.method === 'POST') {
+            const { id } = await request.json();
+            const ids = await this.storage.get('campaign_ids') || [];
+            if (!ids.includes(String(id))) {
+                ids.push(String(id));
+                await this.storage.put('campaign_ids', ids);
+            }
+            return new Response(JSON.stringify({ success: true, ids }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (path === '/registry/remove-id' && request.method === 'POST') {
+            const { id } = await request.json();
+            let ids = await this.storage.get('campaign_ids') || [];
+            ids = ids.filter(item => String(item) !== String(id));
+            await this.storage.put('campaign_ids', ids);
+            return new Response(JSON.stringify({ success: true, ids }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        // 2. Individual Campaign operations
+        if (path === '/state' && request.method === 'GET') {
+            const campaign = await this.storage.get('campaign');
+            const nextAlarm = await this.storage.getAlarm();
+            return new Response(JSON.stringify({ campaign, nextAlarm }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (path === '/init' && request.method === 'POST') {
+            const data = await request.json();
+            await this.storage.put('campaign', data);
+            const now = Date.now();
+            if (data.status === 'running') {
+                await this.storage.setAlarm(now + 150);
+            } else if (data.status === 'waiting' && data.startTime > now) {
+                await this.storage.setAlarm(data.startTime);
+            }
+            return new Response(JSON.stringify({ success: true, campaign: data }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (path === '/action' && request.method === 'POST') {
+            const { action } = await request.json();
+            const campaign = await this.storage.get('campaign');
+            if (!campaign) return new Response(JSON.stringify({ success: false, message: 'Chiến dịch không tồn tại' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+
+            const now = Date.now();
+            if (action === 'start') {
+                campaign.status = now >= campaign.startTime ? 'running' : 'waiting';
+                if (!campaign.actualStartTime && campaign.status === 'running') campaign.actualStartTime = now;
+                if (campaign.status === 'running') {
+                    await this.storage.setAlarm(now + 150);
+                } else {
+                    await this.storage.setAlarm(campaign.startTime);
+                }
+            } else if (action === 'pause') {
+                campaign.status = 'paused';
+                await this.storage.deleteAlarm();
+            } else if (action === 'stop') {
+                campaign.status = 'stopped';
+                campaign.actualEndTime = now;
+                await this.storage.deleteAlarm();
+            } else if (action === 'reset') {
+                campaign.successRequests = 0;
+                campaign.failedRequests = 0;
+                campaign.totalDispatched = 0;
+                campaign.lastAlarmRun = null;
+                campaign.lastAlarmRunText = null;
+                campaign.lastRequestTime = null;
+                campaign.lastRequestText = null;
+                campaign.lastStatusCode = null;
+                campaign.lastLatencyMs = null;
+                campaign.lastError = null;
+                campaign.actualEndTime = null;
+                campaign.recentLogs = [];
+                campaign.status = now >= campaign.startTime ? 'running' : 'waiting';
+                if (campaign.status === 'running') {
+                    await this.storage.setAlarm(now + 150);
+                } else {
+                    await this.storage.setAlarm(campaign.startTime);
+                }
+            }
+            await this.storage.put('campaign', campaign);
+            return new Response(JSON.stringify({ success: true, status: campaign.status }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (path === '/update' && request.method === 'PUT') {
+            const body = await request.json();
+            const campaign = await this.storage.get('campaign');
+            if (!campaign) return new Response(JSON.stringify({ success: false, message: 'Chiến dịch không tồn tại' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+            Object.assign(campaign, body);
+            await this.storage.put('campaign', campaign);
+            return new Response(JSON.stringify({ success: true, campaign }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (path === '/delete' && request.method === 'DELETE') {
+            await this.storage.deleteAlarm();
+            await this.storage.deleteAll();
+            return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        return new Response('Not found', { status: 404 });
+    }
+}
+
+// ─── Durable Object Bridge Helpers ───────────────────────────────────────────
+
+async function getRegistryIds(env) {
+    if (env && env.CAMPAIGN_RUNNER) {
+        try {
+            const regId = env.CAMPAIGN_RUNNER.idFromName('system:registry');
+            const stub = env.CAMPAIGN_RUNNER.get(regId);
+            const res = await stub.fetch('http://do/registry/get-ids');
+            if (res.ok) return await res.json();
+        } catch (e) {
+            console.error('[DO Registry] Error getting IDs:', e.message);
+        }
+    }
+    return null;
+}
+
+async function addRegistryId(env, id) {
+    if (env && env.CAMPAIGN_RUNNER) {
+        try {
+            const regId = env.CAMPAIGN_RUNNER.idFromName('system:registry');
+            const stub = env.CAMPAIGN_RUNNER.get(regId);
+            await stub.fetch('http://do/registry/add-id', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: String(id) })
+            });
+        } catch (e) {
+            console.error('[DO Registry] Error adding ID:', e.message);
+        }
+    }
+}
+
+async function removeRegistryId(env, id) {
+    if (env && env.CAMPAIGN_RUNNER) {
+        try {
+            const regId = env.CAMPAIGN_RUNNER.idFromName('system:registry');
+            const stub = env.CAMPAIGN_RUNNER.get(regId);
+            await stub.fetch('http://do/registry/remove-id', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: String(id) })
+            });
+        } catch (e) {
+            console.error('[DO Registry] Error removing ID:', e.message);
+        }
+    }
+}
+
+async function getDODetails(env, id) {
+    if (!env || !env.CAMPAIGN_RUNNER) return null;
+    try {
+        const doId = env.CAMPAIGN_RUNNER.idFromName(String(id));
+        const stub = env.CAMPAIGN_RUNNER.get(doId);
+        const res = await stub.fetch('http://do/state');
+        if (res.ok) {
+            const data = await res.json();
+            if (data.campaign) {
+                return {
+                    ...data.campaign,
+                    nextAlarm: data.nextAlarm || null
+                };
+            }
+        }
+    } catch (e) {
+        console.error(`[DO] Error getting campaign ${id}:`, e.message);
+    }
+    return null;
+}
+
+// ─── Storage Helpers (DO first, KV fallback) ──────────────────────────────────
+
+async function getCampaigns(env) {
+    if (env && env.CAMPAIGN_RUNNER) {
+        try {
+            const ids = await getRegistryIds(env);
+            if (Array.isArray(ids)) {
+                const list = [];
+                for (const id of ids) {
+                    const c = await getDODetails(env, id);
+                    if (c) list.push(c);
+                }
+                return list;
+            }
+        } catch (e) {
+            console.error('[DO] Error fetching campaigns:', e.message);
+        }
     }
 
-    // Save Cron metadata to KV for live health check
+    if (env && env.CAMPAIGNS_KV) {
+        try {
+            const list = await env.CAMPAIGNS_KV.get('campaigns_list', 'json');
+            if (Array.isArray(list)) return list;
+            return [];
+        } catch (e) {
+            console.error('[KV] Error reading campaigns:', e.message);
+            return [];
+        }
+    }
+
+    return Array.from(memoryCampaigns.values());
+}
+
+async function saveCampaigns(env, campaignsList) {
+    if (env && env.CAMPAIGNS_KV) {
+        try {
+            await env.CAMPAIGNS_KV.put('campaigns_list', JSON.stringify(campaignsList));
+        } catch (e) {
+            console.error('[KV] Error saving campaigns mirror:', e.message);
+        }
+    } else {
+        memoryCampaigns = new Map(campaignsList.map(c => [String(c.id), c]));
+    }
+}
+
+// ─── Cron Trigger Handler (Health & Watchdog) ─────────────────────────────────
+
+async function handleScheduled(event, env, ctx) {
+    const now = Date.now();
+    const viTime = formatVnTime(now);
+
+    let totalProcessed = 0;
+    let totalDispatchedInRun = 0;
+
+    // If Durable Objects are active: Watchdog revives any stalled alarms
+    if (env && env.CAMPAIGN_RUNNER) {
+        try {
+            const ids = await getRegistryIds(env) || [];
+            for (const id of ids) {
+                const c = await getDODetails(env, id);
+                if (c && c.status === 'running') {
+                    totalProcessed++;
+                    if (!c.nextAlarm && now < c.endTime && (c.successRequests || 0) < c.targetRequests) {
+                        const doId = env.CAMPAIGN_RUNNER.idFromName(String(id));
+                        const stub = env.CAMPAIGN_RUNNER.get(doId);
+                        await stub.fetch('http://do/action', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: 'start' })
+                        });
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('[Watchdog DO Error]:', e.message);
+        }
+    } else {
+        // Fallback: Cron batch runner if DO is not configured
+        const campaignsList = await getCampaigns(env);
+        let changed = false;
+
+        for (const c of campaignsList) {
+            if (['stopped', 'completed', 'expired', 'paused'].includes(c.status)) continue;
+
+            if (c.status === 'waiting') {
+                if (now >= c.startTime) {
+                    c.status = 'running';
+                    c.actualStartTime = now;
+                    changed = true;
+                } else {
+                    continue;
+                }
+            }
+
+            if (now >= c.endTime) {
+                c.status = (c.successRequests || 0) >= c.targetRequests ? 'completed' : 'expired';
+                c.actualEndTime = now;
+                changed = true;
+                continue;
+            }
+
+            const remaining = c.targetRequests - (c.successRequests || 0);
+            if (remaining <= 0) {
+                c.status = 'completed';
+                c.actualEndTime = now;
+                changed = true;
+                continue;
+            }
+
+            const adaptive = calculateAdaptiveNextInterval({
+                now,
+                endTime: c.endTime,
+                remainingRequests: remaining,
+                mode: c.scheduleMode || 'smart',
+                timezoneOffsetMinutes: c.timezoneOffsetMinutes
+            });
+            if (!adaptive.valid) continue;
+
+            const targetRatePerMinute = adaptive.currentRatePerHour / 60;
+            let minuteQuota = Math.round(targetRatePerMinute);
+            if (targetRatePerMinute > 0 && minuteQuota === 0) minuteQuota = 1;
+            minuteQuota = Math.min(remaining, Math.max(1, minuteQuota));
+            const maxBatch = Math.min(minuteQuota, c.maxConcurrent || 3, 5);
+
+            totalProcessed++;
+
+            for (let i = 0; i < maxBatch; i++) {
+                if ((c.successRequests || 0) >= c.targetRequests) break;
+
+                const res = await executeWorkerRequest(c.targetUrl, c.timeoutMs || 8000);
+                const reqNow = Date.now();
+                const reqViTime = formatVnTime(reqNow);
+
+                c.totalDispatched = (c.totalDispatched || 0) + 1;
+                totalDispatchedInRun++;
+
+                if (res.success) {
+                    c.successRequests = (c.successRequests || 0) + 1;
+                } else {
+                    c.failedRequests = (c.failedRequests || 0) + 1;
+                }
+
+                c.lastCronRun = now;
+                c.lastCronRunText = viTime;
+                c.lastRequestTime = reqNow;
+                c.lastRequestText = reqViTime;
+                c.lastStatusCode = res.statusCode;
+                c.lastLatencyMs = res.latencyMs;
+                c.lastError = res.error || null;
+
+                if (!Array.isArray(c.recentLogs)) c.recentLogs = [];
+                c.recentLogs.push({
+                    timestamp: reqViTime,
+                    statusCode: res.statusCode,
+                    latencyMs: res.latencyMs,
+                    success: res.success,
+                    text: res.success
+                        ? `[${res.statusCode} OK] ${c.targetUrl} (${res.latencyMs}ms)`
+                        : `[Lỗi] ${res.error} (${res.latencyMs}ms)`
+                });
+                if (c.recentLogs.length > 30) c.recentLogs.shift();
+                changed = true;
+            }
+
+            if ((c.successRequests || 0) >= c.targetRequests) {
+                c.status = 'completed';
+                c.actualEndTime = now;
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            await saveCampaigns(env, campaignsList);
+        }
+    }
+
     const cronMeta = {
         timestamp: now,
         timeText: viTime,
@@ -390,7 +737,7 @@ async function handleFetch(request, env, ctx) {
 
     if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
-    // GET /api/health - Check Worker, Cron status, Storage & Scheduler
+    // GET /api/health - Check Worker, Storage (DO / KV), and Engine Pacing
     if (url.pathname === '/api/health' && request.method === 'GET') {
         let cronMeta = lastCronState;
         if (env && env.CAMPAIGNS_KV) {
@@ -410,15 +757,29 @@ async function handleFetch(request, env, ctx) {
 
         const list = await getCampaigns(env);
         const runningCampaigns = list.filter(c => c.status === 'running').length;
+        const isDO = Boolean(env && env.CAMPAIGN_RUNNER);
+
+        let latestReqText = null;
+        let latestReqTime = null;
+        for (const c of list) {
+            if (c.lastRequestTime && (!latestReqTime || c.lastRequestTime > latestReqTime)) {
+                latestReqTime = c.lastRequestTime;
+                latestReqText = c.lastRequestText;
+            }
+        }
 
         return new Response(JSON.stringify({
             worker: 'ok',
             status: 'healthy',
-            storage: (env && env.CAMPAIGNS_KV) ? 'connected' : 'memory',
+            storage: isDO ? 'durable_objects' : ((env && env.CAMPAIGNS_KV) ? 'connected' : 'memory'),
+            storageLabel: isDO ? '🟢 Durable Objects (Strong Consistency)' : '🟡 KV Storage',
+            engine: isDO ? 'DO Alarms (Organic Smart Pacing)' : 'Cron Trigger',
+            engineType: isDO ? 'durable_objects' : 'cron',
             lastCronRun: cronMeta ? cronMeta.timestamp : null,
             lastCronRunText: cronMeta ? cronMeta.timeText : 'Chưa chạy (Never)',
             cronSecondsAgo: diffSec,
             cronStatus,
+            latestRequestText: latestReqText,
             totalCampaigns: list.length,
             runningCampaigns,
             serverTime: now,
@@ -439,9 +800,9 @@ async function handleFetch(request, env, ctx) {
 
     // POST /api/campaigns/sample (Tạo chiến dịch mẫu chạy ngay hôm nay)
     if (url.pathname === '/api/campaigns/sample' && request.method === 'POST') {
+        const now = Date.now();
         const list = await getCampaigns(env);
         const nextId = String(list.reduce((max, c) => Math.max(max, parseInt(c.id, 10) || 0), 0) + 1);
-        const now = Date.now();
         const sample = {
             id: nextId,
             name: `Chiến dịch Mẫu ${nextId} (${formatVnTime(now)})`,
@@ -458,8 +819,8 @@ async function handleFetch(request, env, ctx) {
             successRequests: 0,
             failedRequests: 0,
             totalDispatched: 0,
-            lastCronRun: null,
-            lastCronRunText: null,
+            lastAlarmRun: null,
+            lastAlarmRunText: null,
             lastRequestTime: null,
             lastRequestText: null,
             lastStatusCode: null,
@@ -469,8 +830,21 @@ async function handleFetch(request, env, ctx) {
             actualEndTime: null,
             recentLogs: []
         };
-        list.push(sample);
-        await saveCampaigns(env, list);
+
+        if (env && env.CAMPAIGN_RUNNER) {
+            await addRegistryId(env, nextId);
+            const doId = env.CAMPAIGN_RUNNER.idFromName(nextId);
+            const stub = env.CAMPAIGN_RUNNER.get(doId);
+            await stub.fetch('http://do/init', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(sample)
+            });
+        } else {
+            list.push(sample);
+            await saveCampaigns(env, list);
+        }
+
         return new Response(JSON.stringify({ success: true, id: nextId, campaign: sample }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
 
@@ -498,19 +872,32 @@ async function handleFetch(request, env, ctx) {
                 successRequests: 0,
                 failedRequests: 0,
                 totalDispatched: 0,
-                lastCronRun: null,
-                lastCronRunText: null,
+                lastAlarmRun: null,
+                lastAlarmRunText: null,
                 lastRequestTime: null,
                 lastRequestText: null,
                 lastStatusCode: null,
                 lastLatencyMs: null,
                 lastError: null,
-                actualStartTime: Date.now(),
+                actualStartTime: (Number(body.startTime) || Date.now()) <= Date.now() ? Date.now() : null,
                 actualEndTime: null,
                 recentLogs: []
             };
-            list.push(newCampaign);
-            await saveCampaigns(env, list);
+
+            if (env && env.CAMPAIGN_RUNNER) {
+                await addRegistryId(env, nextId);
+                const doId = env.CAMPAIGN_RUNNER.idFromName(nextId);
+                const stub = env.CAMPAIGN_RUNNER.get(doId);
+                await stub.fetch('http://do/init', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(newCampaign)
+                });
+            } else {
+                list.push(newCampaign);
+                await saveCampaigns(env, list);
+            }
+
             return new Response(JSON.stringify({ success: true, id: nextId, campaign: newCampaign }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
         } catch (e) {
             return new Response(JSON.stringify({ success: false, message: e.message }), { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
@@ -522,6 +909,43 @@ async function handleFetch(request, env, ctx) {
     if (campaignActionMatch) {
         const id = campaignActionMatch[1];
         const action = campaignActionMatch[3];
+
+        if (env && env.CAMPAIGN_RUNNER) {
+            if (request.method === 'DELETE') {
+                await removeRegistryId(env, id);
+                const doId = env.CAMPAIGN_RUNNER.idFromName(id);
+                const stub = env.CAMPAIGN_RUNNER.get(doId);
+                await stub.fetch('http://do/delete', { method: 'DELETE' });
+                return new Response(JSON.stringify({ success: true, message: `Đã xóa chiến dịch ${id}` }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+            }
+
+            if (request.method === 'PUT') {
+                const body = await request.json();
+                const doId = env.CAMPAIGN_RUNNER.idFromName(id);
+                const stub = env.CAMPAIGN_RUNNER.get(doId);
+                const res = await stub.fetch('http://do/update', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const d = await res.json();
+                return new Response(JSON.stringify(d), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+            }
+
+            if (request.method === 'POST') {
+                const doId = env.CAMPAIGN_RUNNER.idFromName(id);
+                const stub = env.CAMPAIGN_RUNNER.get(doId);
+                const res = await stub.fetch('http://do/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action })
+                });
+                const d = await res.json();
+                return new Response(JSON.stringify(d), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+            }
+        }
+
+        // Fallback (KV / Memory)
         const list = await getCampaigns(env);
         const index = list.findIndex(c => String(c.id) === id);
         if (index === -1) return new Response(JSON.stringify({ success: false, message: 'Chiến dịch không tồn tại' }), { status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
@@ -599,3 +1023,4 @@ export default {
     fetch: handleFetch,
     scheduled: handleScheduled
 };
+

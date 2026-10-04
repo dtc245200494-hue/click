@@ -830,22 +830,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Storage status
             if (healthStorageVal && healthStorageDot) {
-                if (data.storage === 'connected') {
-                    healthStorageVal.textContent = '🟢 KV Connected';
+                if (data.storage === 'durable_objects') {
+                    healthStorageVal.textContent = '🟢 Durable Objects (Strong Consistency)';
+                    healthStorageDot.className = 'pulse-indicator online';
+                } else if (data.storage === 'connected') {
+                    healthStorageVal.textContent = '🟡 KV Connected';
                     healthStorageDot.className = 'pulse-indicator online';
                 } else {
-                    healthStorageVal.textContent = '🟡 Memory fallback';
+                    healthStorageVal.textContent = '⚪ Memory fallback';
                     healthStorageDot.className = 'pulse-indicator waiting';
                 }
             }
 
             // Scheduler status
             if (healthSchedulerVal && healthSchedulerDot) {
+                const engineName = data.engineType === 'durable_objects' ? 'DO Alarms (Organic Pacing)' : 'Cron';
                 if (data.runningCampaigns > 0) {
-                    healthSchedulerVal.textContent = `🟢 Active (${data.runningCampaigns} đang chạy)`;
+                    healthSchedulerVal.textContent = `🟢 ${engineName} (${data.runningCampaigns} đang chạy)`;
                     healthSchedulerDot.className = 'pulse-indicator online';
                 } else {
-                    healthSchedulerVal.textContent = `⚪ Idle (0 đang chạy)`;
+                    healthSchedulerVal.textContent = `⚪ ${engineName} (0 đang chạy)`;
                     healthSchedulerDot.className = 'pulse-indicator idle';
                 }
             }
