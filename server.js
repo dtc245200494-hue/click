@@ -14,11 +14,27 @@ const {
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-    cors: { origin: '*' }
-});
 
-const PORT = process.env.PORT || 3005;
+const PORT = parseInt(process.env.PORT, 10) || 3005;
+const HOST = process.env.HOST || '127.0.0.1'; // Bảo mật: Chỉ bind localhost
+
+// ─── Socket.IO với CORS an toàn cho Localhost ──────────────────────────────────
+const io = new Server(server, {
+    cors: {
+        origin: (origin, callback) => {
+            // Cho phép request cùng origin hoặc không có origin (local, curl)
+            if (!origin) return callback(null, true);
+            try {
+                const parsed = new URL(origin);
+                const allowed = ['localhost', '127.0.0.1'];
+                if (allowed.includes(parsed.hostname)) {
+                    return callback(null, true);
+                }
+            } catch (e) {}
+            return callback(new Error('CORS disallowed'), false);
+        }
+    }
+});
 
 // ─── Middleware ────────────────────────────────────────────────────────────────
 app.use(express.json());
@@ -40,7 +56,7 @@ const httpsAgent = new https.Agent({
 });
 
 /**
- * Super lightweight HTTP Request Executor
+ * Super lightweight HTTP Request Executor with Keep-Alive
  */
 function executeHttpRequest({ url, method = 'GET', timeoutMs = 8000, headers = {} }) {
     return new Promise((resolve) => {
@@ -81,7 +97,7 @@ function executeHttpRequest({ url, method = 'GET', timeoutMs = 8000, headers = {
         };
 
         const req = client.request(options, (res) => {
-            // Drain data to allow socket reuse
+            // Drain stream to allow Keep-Alive socket reuse
             res.on('data', () => {});
             res.on('end', () => {
                 const latencyMs = Date.now() - startTime;
@@ -113,11 +129,91 @@ function executeHttpRequest({ url, method = 'GET', timeoutMs = 8000, headers = {
     });
 }
 
-// ─── Campaigns Storage ─────────────────────────────────────────────────────────
+// ─── Campaigns State & Persistent Storage ──────────────────────────────────────
 const CAMPAIGNS_DIR = path.join(__dirname, 'campaigns');
 if (!fs.existsSync(CAMPAIGNS_DIR)) fs.mkdirSync(CAMPAIGNS_DIR, { recursive: true });
 
 const campaigns = new Map();
+const dirtyCampaigns = new Set();
+let persistDebounceTimer = null;
+
+function serializeCampaign(c) {
+    return {
+        name: c.config.name,
+        targetUrl: c.config.targetUrl,
+        targetRequests: c.targetRequests,
+        startTime: c.config.startTime,
+        endTime: c.config.endTime,
+        scheduleMode: c.config.scheduleMode,
+        timeoutMs: c.config.timeoutMs,
+        maxConcurrent: c.config.maxConcurrent,
+        timezoneOffsetMinutes: c.config.timezoneOffsetMinutes,
+        maxRetries: c.config.maxRetries,
+        status: c.status,
+        successRequests: c.successRequests,
+        failedRequests: c.failedRequests,
+        totalDispatched: c.totalDispatched,
+        actualStartTime: c.actualStartTime,
+        actualEndTime: c.actualEndTime
+    };
+}
+
+function flushCampaignToDisk(id) {
+    const campaign = campaigns.get(id);
+    if (!campaign) return;
+    try {
+        const data = serializeCampaign(campaign);
+        const tempPath = path.join(CAMPAIGNS_DIR, `${id}.json.tmp`);
+        const targetPath = path.join(CAMPAIGNS_DIR, `${id}.json`);
+        fs.writeFileSync(tempPath, JSON.stringify(data, null, 4), 'utf-8');
+        fs.renameSync(tempPath, targetPath); // Ghi file nguyên tử (Atomic write)
+    } catch (e) {
+        console.error(`[Storage] Lỗi lưu chiến dịch ${id}:`, e.message);
+    }
+}
+
+function saveCampaignImmediate(id) {
+    dirtyCampaigns.delete(id);
+    flushCampaignToDisk(id);
+}
+
+function markCampaignDirty(id) {
+    dirtyCampaigns.add(id);
+    if (!persistDebounceTimer) {
+        persistDebounceTimer = setTimeout(() => {
+            persistDebounceTimer = null;
+            for (const cid of dirtyCampaigns) {
+                flushCampaignToDisk(cid);
+            }
+            dirtyCampaigns.clear();
+        }, 1000); // Debounce 1s tránh nghẽn I/O đĩa
+    }
+}
+
+function flushAllCampaignsSync() {
+    if (persistDebounceTimer) {
+        clearTimeout(persistDebounceTimer);
+        persistDebounceTimer = null;
+    }
+    for (const [id, c] of campaigns.entries()) {
+        try {
+            const data = serializeCampaign(c);
+            fs.writeFileSync(path.join(CAMPAIGNS_DIR, `${id}.json`), JSON.stringify(data, null, 4), 'utf-8');
+        } catch (e) {}
+    }
+}
+
+process.on('SIGINT', () => {
+    console.log('\n[Process] Nhận SIGINT, lưu trạng thái chiến dịch trước khi thoát...');
+    flushAllCampaignsSync();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    console.log('\n[Process] Nhận SIGTERM, lưu trạng thái chiến dịch trước khi thoát...');
+    flushAllCampaignsSync();
+    process.exit(0);
+});
 
 function createCampaignState(id, rawConfig) {
     const targetRequests = parseInt(rawConfig.targetRequests || rawConfig.targetClicks, 10) || 100;
@@ -127,6 +223,7 @@ function createCampaignState(id, rawConfig) {
     const timeoutMs = parseInt(rawConfig.timeoutMs, 10) || 8000;
     const maxConcurrent = Math.max(1, Math.min(20, parseInt(rawConfig.maxConcurrent, 10) || 3));
     const timezoneOffsetMinutes = hasTimezoneOffset(rawConfig.timezoneOffsetMinutes) ? Number(rawConfig.timezoneOffsetMinutes) : null;
+    const maxRetries = Number.isInteger(rawConfig.maxRetries) ? Math.max(0, Math.min(3, rawConfig.maxRetries)) : 1;
 
     const config = {
         name: rawConfig.name || `Chiến dịch ${id}`,
@@ -138,14 +235,32 @@ function createCampaignState(id, rawConfig) {
         timeoutMs,
         maxConcurrent,
         timezoneOffsetMinutes,
-        maxRetries: Number.isInteger(rawConfig.maxRetries) ? Math.max(0, Math.min(3, rawConfig.maxRetries)) : 1,
+        maxRetries,
         retryBackoffMs: 2000
     };
 
+    // Khôi phục trạng thái đã chạy từ disk (Persistence)
+    const savedSuccess = parseInt(rawConfig.successRequests, 10) || 0;
+    const savedFailed = parseInt(rawConfig.failedRequests, 10) || 0;
+    const savedDispatched = parseInt(rawConfig.totalDispatched, 10) || (savedSuccess + savedFailed);
+    const savedActualStart = rawConfig.actualStartTime || null;
+    const savedActualEnd = rawConfig.actualEndTime || null;
+    const savedStatus = rawConfig.status;
+
     const now = Date.now();
     let status = 'waiting';
-    if (now >= endTime) status = 'expired';
-    else if (now >= startTime) status = 'running';
+
+    if (['completed', 'stopped', 'expired'].includes(savedStatus)) {
+        status = savedStatus;
+    } else if (savedSuccess >= targetRequests) {
+        status = 'completed';
+    } else if (now >= endTime) {
+        status = 'expired';
+    } else if (savedStatus === 'paused') {
+        status = 'paused';
+    } else if (now >= startTime) {
+        status = 'running';
+    }
 
     return {
         id,
@@ -153,12 +268,12 @@ function createCampaignState(id, rawConfig) {
         status,
         startTime,
         endTime,
-        actualStartTime: status === 'running' ? now : null,
-        actualEndTime: null,
+        actualStartTime: savedActualStart || (status === 'running' ? now : null),
+        actualEndTime: savedActualEnd,
         targetRequests,
-        successRequests: 0,
-        failedRequests: 0,
-        totalDispatched: 0,
+        successRequests: savedSuccess,
+        failedRequests: savedFailed,
+        totalDispatched: savedDispatched,
         activeWorkers: 0,
         nextScheduledTime: null,
         lastScheduledIntervalMs: 0,
@@ -180,21 +295,14 @@ function loadCampaignsFromDisk() {
                 if (!config.targetUrl || !config.startTime || !config.endTime) continue;
                 const state = createCampaignState(id, config);
                 campaigns.set(id, state);
+                console.log(`[Storage] Đã tải C${id}: ${state.config.name} (Tiến độ: ${state.successRequests}/${state.targetRequests}, Trạng thái: ${state.status})`);
             } catch (e) {
-                console.error(`[Load] Error reading ${file}:`, e.message);
+                console.error(`[Load] Lỗi đọc ${file}:`, e.message);
             }
         }
-        console.log(`[Storage] Đã tải ${campaigns.size} chiến dịch từ đĩa.`);
+        console.log(`[Storage] Đã tải tổng cộng ${campaigns.size} chiến dịch từ đĩa.`);
     } catch (e) {
         console.error('[Storage] Lỗi đọc thư mục campaigns:', e.message);
-    }
-}
-
-function saveCampaignConfig(id, config) {
-    try {
-        fs.writeFileSync(path.join(CAMPAIGNS_DIR, `${id}.json`), JSON.stringify(config, null, 4), 'utf-8');
-    } catch (e) {
-        console.error(`[Storage] Lỗi lưu chiến dịch ${id}:`, e.message);
     }
 }
 
@@ -228,7 +336,7 @@ function emitStats(campaignId) {
     const timeRemainingStr = formatDuration(timeLeft);
     const etaStr = campaign.endTime ? new Date(campaign.endTime).toLocaleTimeString('vi-VN') : '--:--';
 
-    // Calculate rolling avg latency
+    // Rolling avg latency
     const recentLatencies = campaign.latencyHistory.slice(-20);
     const avgLatencyMs = recentLatencies.length > 0
         ? Math.round(recentLatencies.reduce((a, b) => a + b, 0) / recentLatencies.length)
@@ -245,6 +353,7 @@ function emitStats(campaignId) {
         target: campaign.targetRequests,
         success: campaign.successRequests,
         failed: campaign.failedRequests,
+        totalDispatched: campaign.totalDispatched,
         remaining: remainingRequests,
         activeWorkers: campaign.activeWorkers,
         maxConcurrent: campaign.config.maxConcurrent,
@@ -273,6 +382,7 @@ function emitCampaignList() {
             targetRequests: c.targetRequests,
             successRequests: c.successRequests,
             failedRequests: c.failedRequests,
+            totalDispatched: c.totalDispatched,
             remaining,
             progressPercent,
             scheduleMode: c.config.scheduleMode,
@@ -295,14 +405,17 @@ function completeCampaign(campaignId, reason) {
     campaign.status = reason;
     campaign.actualEndTime = Date.now();
     if (!campaign.actualStartTime) campaign.actualStartTime = campaign.startTime || Date.now();
+    campaign.retryQueue = [];
+    campaign.nextScheduledTime = null;
 
     const messages = {
-        completed: `Chiến dịch ${campaignId} HOÀN THÀNH XUẤT SẮC! Đạt ${campaign.successRequests}/${campaign.targetRequests} requests.`,
-        expired: `Chiến dịch ${campaignId} ĐÃ HẾT GIỜ. Đạt ${campaign.successRequests}/${campaign.targetRequests} requests.`,
-        stopped: `Chiến dịch ${campaignId} ĐÃ DỪNG LẠI. Đạt ${campaign.successRequests}/${campaign.targetRequests} requests.`
+        completed: `Chiến dịch ${campaignId} HOÀN THÀNH XUẤT SẮC! Đạt ${campaign.successRequests}/${campaign.targetRequests} thành công (Tổng gửi: ${campaign.totalDispatched} reqs).`,
+        expired: `Chiến dịch ${campaignId} ĐÃ HẾT GIỜ. Đạt ${campaign.successRequests}/${campaign.targetRequests} thành công (Tổng gửi: ${campaign.totalDispatched} reqs).`,
+        stopped: `Chiến dịch ${campaignId} ĐÃ DỪNG LẠI. Đạt ${campaign.successRequests}/${campaign.targetRequests} thành công (Tổng gửi: ${campaign.totalDispatched} reqs).`
     };
 
     sendLog(campaignId, messages[reason] || `Kết thúc: ${reason}`, reason === 'completed' ? 'success' : 'warn');
+    saveCampaignImmediate(campaignId);
     io.emit('status-update', { campaignId, status: campaign.status, isRunning: false });
     emitStats(campaignId);
     emitCampaignList();
@@ -313,8 +426,14 @@ async function dispatchRequest(campaignId, isRetry = false, retryAttempt = 0) {
     const campaign = campaigns.get(campaignId);
     if (!campaign || campaign.status !== 'running') return;
 
+    // Chặn tuyệt đối không dispatch nếu số thành công + in-flight đã chạm mốc target!
+    if (campaign.successRequests + campaign.activeWorkers >= campaign.targetRequests) {
+        return;
+    }
+
     campaign.activeWorkers++;
     campaign.totalDispatched++;
+    markCampaignDirty(campaignId);
     emitStats(campaignId);
 
     const targetUrl = campaign.config.targetUrl;
@@ -337,6 +456,12 @@ async function dispatchRequest(campaignId, isRetry = false, retryAttempt = 0) {
                 latencyMs: result.latencyMs,
                 isRetry
             });
+
+            // Nếu đạt đúng target: Hủy ngay hàng đợi retry để tránh bắn dư bất kỳ request nào!
+            if (campaign.successRequests >= campaign.targetRequests) {
+                campaign.retryQueue = [];
+                campaign.nextScheduledTime = null;
+            }
         } else {
             campaign.failedRequests++;
             sendLog(campaignId, `[Lỗi] ${targetUrl}: ${result.error || `HTTP ${result.statusCode}`} (${result.latencyMs}ms)`, 'error', {
@@ -345,10 +470,13 @@ async function dispatchRequest(campaignId, isRetry = false, retryAttempt = 0) {
                 latencyMs: result.latencyMs
             });
 
-            // Handle Retry if within campaign window
+            // Kiểm tra điều kiện retry an toàn:
+            // Chỉ retry nếu tổng thành công + in-flight CHƯA chạm target!
+            const remainingNeeded = campaign.targetRequests - (campaign.successRequests + campaign.activeWorkers);
             const nextAttempt = retryAttempt + 1;
             const retryAt = Date.now() + (campaign.config.retryBackoffMs || 2000);
-            if (nextAttempt <= (campaign.config.maxRetries || 1) && retryAt < campaign.endTime) {
+
+            if (remainingNeeded > 0 && nextAttempt <= (campaign.config.maxRetries || 1) && retryAt < campaign.endTime) {
                 campaign.retryQueue.push({
                     attempt: nextAttempt,
                     dueAt: retryAt
@@ -361,9 +489,10 @@ async function dispatchRequest(campaignId, isRetry = false, retryAttempt = 0) {
         sendLog(campaignId, `[Ngoại lệ] ${err.message}`, 'error');
     } finally {
         campaign.activeWorkers = Math.max(0, campaign.activeWorkers - 1);
+        markCampaignDirty(campaignId);
         emitStats(campaignId);
 
-        // Check completion criteria
+        // Kiểm tra điều kiện hoàn thành
         if (campaign.successRequests >= campaign.targetRequests) {
             completeCampaign(campaignId, 'completed');
         } else if (Date.now() >= campaign.endTime && campaign.activeWorkers === 0) {
@@ -395,7 +524,8 @@ async function tickCampaign(campaignId) {
             if (now >= campaign.startTime) {
                 campaign.status = 'running';
                 campaign.actualStartTime = now;
-                sendLog(campaignId, `Bắt đầu chạy chiến dịch! Mục tiêu: ${campaign.targetRequests} requests.`, 'info');
+                saveCampaignImmediate(campaignId);
+                sendLog(campaignId, `Bắt đầu chạy chiến dịch! Mục tiêu: ${campaign.targetRequests} requests thành công.`, 'info');
                 io.emit('status-update', { campaignId, status: 'running', isRunning: true });
                 emitCampaignList();
             } else {
@@ -413,33 +543,38 @@ async function tickCampaign(campaignId) {
             return;
         }
 
-        // 4. Clean expired retries
+        // 4. Dọn các retry đã quá hạn kết thúc chiến dịch
         campaign.retryQueue = campaign.retryQueue.filter(r => r.dueAt < campaign.endTime);
 
-        // 5. Check concurrency availability
+        // 5. Kiểm tra giới hạn luồng đồng thời (Concurrency)
         const maxConcurrent = campaign.config.maxConcurrent || 3;
         if (campaign.activeWorkers >= maxConcurrent) {
             emitStats(campaignId);
             return;
         }
 
-        // 6. Handle retries with priority
+        // 6. KIỂM TRA QUOTA AN TOÀN CHỐNG VƯỢT TARGET:
+        // Tính tổng số request còn thiếu để chạm mốc Target:
+        const remainingSlots = campaign.targetRequests - (campaign.successRequests + campaign.activeWorkers);
+        if (remainingSlots <= 0) {
+            // Số success + in-flight đã đủ để cán đích! Không dispatch thêm bất cứ request hay retry nào!
+            campaign.retryQueue = [];
+            return;
+        }
+
+        // 7. Xử lý retry an toàn (Retry queue)
         const dueRetryIndex = campaign.retryQueue.findIndex(r => r.dueAt <= now);
-        if (dueRetryIndex >= 0 && campaign.activeWorkers < maxConcurrent) {
+        if (dueRetryIndex >= 0 && campaign.activeWorkers < maxConcurrent && remainingSlots > 0) {
             const retryJob = campaign.retryQueue.splice(dueRetryIndex, 1)[0];
             dispatchRequest(campaignId, true, retryJob.attempt);
             return;
         }
 
-        // 7. Adaptive Pacing Calculation
-        const remainingToTarget = Math.max(0, campaign.targetRequests - campaign.successRequests - campaign.activeWorkers);
-        if (remainingToTarget <= 0) return;
-
-        // Recalculate adaptive interval
+        // 8. Thuật toán Adaptive Smart/Even Scheduler
         const adaptive = calculateAdaptiveNextInterval({
             now,
             endTime: campaign.endTime,
-            remainingRequests: remainingToTarget,
+            remainingRequests: remainingSlots,
             mode: campaign.config.scheduleMode,
             timezoneOffsetMinutes: campaign.config.timezoneOffsetMinutes
         });
@@ -449,12 +584,9 @@ async function tickCampaign(campaignId) {
         campaign.currentRatePerHour = adaptive.currentRatePerHour;
         campaign.lastScheduledIntervalMs = adaptive.idealIntervalMs;
 
-        // If nextScheduledTime has not been set or has arrived, fire request!
+        // Nếu đã đến lịch bắn request tiếp theo:
         if (campaign.nextScheduledTime === null || now >= campaign.nextScheduledTime) {
-            // Schedule NEXT request using adaptive jittered interval
             campaign.nextScheduledTime = now + adaptive.jitteredIntervalMs;
-
-            // Dispatch immediately
             dispatchRequest(campaignId, false, 0);
         }
 
@@ -476,7 +608,7 @@ setInterval(() => {
 
 // ─── REST APIs ─────────────────────────────────────────────────────────────────
 
-// List all campaigns
+// Danh sách chiến dịch
 app.get('/api/campaigns', (req, res) => {
     const list = [];
     for (const [id, c] of campaigns.entries()) {
@@ -490,6 +622,7 @@ app.get('/api/campaigns', (req, res) => {
             targetRequests: c.targetRequests,
             successRequests: c.successRequests,
             failedRequests: c.failedRequests,
+            totalDispatched: c.totalDispatched,
             remaining,
             progressPercent,
             scheduleMode: c.config.scheduleMode,
@@ -497,13 +630,15 @@ app.get('/api/campaigns', (req, res) => {
             timeoutMs: c.config.timeoutMs,
             startTime: c.config.startTime,
             endTime: c.config.endTime,
+            actualStartTime: c.actualStartTime,
+            actualEndTime: c.actualEndTime,
             config: c.config
         });
     }
     res.json({ success: true, data: list });
 });
 
-// Create campaign
+// Tạo chiến dịch mới
 app.post('/api/campaigns', (req, res) => {
     try {
         const body = req.body;
@@ -511,10 +646,20 @@ app.post('/api/campaigns', (req, res) => {
             return res.status(400).json({ success: false, message: 'targetUrl là bắt buộc' });
         }
 
+        let parsed;
+        try {
+            parsed = new URL(body.targetUrl);
+            if (!['http:', 'https:'].includes(parsed.protocol)) {
+                return res.status(400).json({ success: false, message: 'Chỉ hỗ trợ giao thức http hoặc https' });
+            }
+        } catch (e) {
+            return res.status(400).json({ success: false, message: 'targetUrl không hợp lệ' });
+        }
+
         const id = generateCampaignId();
         const state = createCampaignState(id, body);
         campaigns.set(id, state);
-        saveCampaignConfig(id, state.config);
+        saveCampaignImmediate(id);
 
         sendLog(id, `Đã tạo chiến dịch mới: "${state.config.name}" (${state.config.targetRequests} reqs, ${state.config.scheduleMode.toUpperCase()})`, 'info');
         emitCampaignList();
@@ -526,7 +671,7 @@ app.post('/api/campaigns', (req, res) => {
     }
 });
 
-// Update campaign
+// Cập nhật chiến dịch
 app.put('/api/campaigns/:id', (req, res) => {
     const id = req.params.id;
     const campaign = campaigns.get(id);
@@ -553,7 +698,7 @@ app.put('/api/campaigns/:id', (req, res) => {
         campaign.targetRequests = newConfig.targetRequests;
         campaign.startTime = newConfig.startTime;
         campaign.endTime = newConfig.endTime;
-        saveCampaignConfig(id, newConfig);
+        saveCampaignImmediate(id);
 
         sendLog(id, `Cập nhật cấu hình chiến dịch thành công`, 'info');
         emitCampaignList();
@@ -565,7 +710,7 @@ app.put('/api/campaigns/:id', (req, res) => {
     }
 });
 
-// Delete campaign
+// Xóa chiến dịch
 app.delete('/api/campaigns/:id', (req, res) => {
     const id = req.params.id;
     if (!campaigns.has(id)) {
@@ -578,7 +723,7 @@ app.delete('/api/campaigns/:id', (req, res) => {
     res.json({ success: true, message: `Đã xóa chiến dịch ${id}` });
 });
 
-// Start / Resume campaign
+// Bắt đầu / Tiếp tục chiến dịch
 app.post('/api/campaigns/:id/start', (req, res) => {
     const id = req.params.id;
     const campaign = campaigns.get(id);
@@ -593,35 +738,37 @@ app.post('/api/campaigns/:id/start', (req, res) => {
     if (campaign.status === 'running' && !campaign.actualStartTime) {
         campaign.actualStartTime = now;
     }
-    campaign.nextScheduledTime = null; // Re-evaluate immediately
+    campaign.nextScheduledTime = null; // Re-evaluate ngay lập tức
 
+    saveCampaignImmediate(id);
     sendLog(id, `Khởi động/Tiếp tục chiến dịch`, 'info');
     emitCampaignList();
     emitStats(id);
     res.json({ success: true, status: campaign.status });
 });
 
-// Pause campaign
+// Tạm dừng chiến dịch
 app.post('/api/campaigns/:id/pause', (req, res) => {
     const id = req.params.id;
     const campaign = campaigns.get(id);
     if (!campaign) return res.status(404).json({ success: false, message: 'Chiến dịch không tồn tại' });
 
     campaign.status = 'paused';
+    saveCampaignImmediate(id);
     sendLog(id, `Tạm dừng chiến dịch`, 'warn');
     emitCampaignList();
     emitStats(id);
     res.json({ success: true, status: 'paused' });
 });
 
-// Stop campaign
+// Dừng hẳn chiến dịch
 app.post('/api/campaigns/:id/stop', (req, res) => {
     const id = req.params.id;
     completeCampaign(id, 'stopped');
     res.json({ success: true, status: 'stopped' });
 });
 
-// Reset campaign stats
+// Reset tiến trình chiến dịch
 app.post('/api/campaigns/:id/reset', (req, res) => {
     const id = req.params.id;
     const campaign = campaigns.get(id);
@@ -633,19 +780,26 @@ app.post('/api/campaigns/:id/reset', (req, res) => {
     campaign.latencyHistory = [];
     campaign.retryQueue = [];
     campaign.nextScheduledTime = null;
+    campaign.actualEndTime = null;
 
     const now = Date.now();
     if (now >= campaign.endTime) campaign.status = 'expired';
-    else if (now >= campaign.startTime) campaign.status = 'running';
-    else campaign.status = 'waiting';
+    else if (now >= campaign.startTime) {
+        campaign.status = 'running';
+        campaign.actualStartTime = now;
+    } else {
+        campaign.status = 'waiting';
+        campaign.actualStartTime = null;
+    }
 
+    saveCampaignImmediate(id);
     sendLog(id, `Đã làm mới (reset) tiến trình chiến dịch`, 'info');
     emitCampaignList();
     emitStats(id);
     res.json({ success: true, status: campaign.status });
 });
 
-// Distribution preview API
+// API Xem trước phân bổ nhịp
 app.get('/api/preview-distribution', (req, res) => {
     try {
         const { startTime, endTime, targetRequests, mode, timezoneOffsetMinutes } = req.query;
@@ -662,22 +816,38 @@ app.get('/api/preview-distribution', (req, res) => {
     }
 });
 
-// URL Connectivity / Latency Ping Test API
+// API Test Ping URL kiểm thử kết nối an toàn
 app.post('/api/test-url', async (req, res) => {
     const { url, timeoutMs = 5000 } = req.body;
-    if (!url) return res.status(400).json({ success: false, message: 'URL là bắt buộc' });
+    if (!url || typeof url !== 'string') {
+        return res.status(400).json({ success: false, message: 'URL là bắt buộc và phải là chuỗi' });
+    }
 
-    const result = await executeHttpRequest({ url, timeoutMs });
+    let parsed;
+    try {
+        parsed = new URL(url);
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+            return res.status(400).json({ success: false, message: 'Chỉ hỗ trợ giao thức http hoặc https' });
+        }
+    } catch (err) {
+        return res.status(400).json({ success: false, message: 'Định dạng URL không hợp lệ' });
+    }
+
+    const result = await executeHttpRequest({
+        url: parsed.href,
+        timeoutMs: Math.min(15000, Math.max(1000, parseInt(timeoutMs, 10) || 5000))
+    });
     res.json(result);
 });
 
-// ─── Start Server ──────────────────────────────────────────────────────────────
+// ─── Khởi động Server ──────────────────────────────────────────────────────────
 loadCampaignsFromDisk();
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
     console.log(`\n======================================================`);
     console.log(`🚀 TRAFFIC BENCHMARK RUNNER 2.0 (SUPER LIGHTWEIGHT)`);
-    console.log(`📡 Dashboard đang chạy tại: http://localhost:${PORT}`);
+    console.log(`📡 Dashboard đang chạy tại: http://${HOST}:${PORT}`);
+    console.log(`🔒 Bảo mật: Chỉ lắng nghe cục bộ trên ${HOST}`);
     console.log(`⚡ Sẵn sàng chạy load test HTTP với Even & Smart Distribution`);
     console.log(`======================================================\n`);
 });

@@ -235,6 +235,7 @@ body {
 .metric-purple { background: rgba(99, 102, 241, 0.15); color: #818cf8; }
 .metric-emerald { background: rgba(16, 185, 129, 0.15); color: #34d399; }
 .metric-cyan { background: rgba(6, 182, 212, 0.15); color: #22d3ee; }
+.metric-indigo { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; }
 .metric-amber { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
 
 .metric-body {
@@ -474,7 +475,7 @@ body {
 /* Stats Pill Row */
 .campaign-stats-pill-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
     gap: 8px;
 }
 
@@ -498,9 +499,11 @@ body {
     font-family: var(--font-mono);
 }
 
+.val-target { color: #f8fafc; }
 .val-success { color: var(--success); }
 .val-failed { color: var(--danger); }
 .val-remaining { color: #a5b4fc; }
+.val-dispatched { color: #38bdf8; }
 .val-workers { color: var(--cyan); }
 
 /* Meta info row */

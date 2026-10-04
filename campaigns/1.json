@@ -6,5 +6,11 @@
     "endTime": 1790262000000,
     "scheduleMode": "smart",
     "timeoutMs": 8000,
-    "maxConcurrent": 3
+    "maxConcurrent": 3,
+    "status": "waiting",
+    "successRequests": 0,
+    "failedRequests": 0,
+    "totalDispatched": 0,
+    "actualStartTime": null,
+    "actualEndTime": null
 }

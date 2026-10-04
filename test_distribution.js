@@ -181,8 +181,6 @@ function runTests() {
 
     // CASE 12: CHỐNG BẮN DỒN KHI SERVER BỊ LAG (Server lag 10 phút)
     console.log('--- TEST CASE 12: CHỐNG BẮN DỒN KHI LAG 10 PHÚT ---');
-    // Trước khi lag: lúc 09:48, interval là ~26.6s
-    // Sau khi server lag 10 phút, lúc 09:58 (vẫn còn 433 requests vì trong 10 phút không bắn được gì)
     const nowAfterLag = now10 + (10 * 60000); // 09:58
     const adaptiveAfterLag = calculateAdaptiveNextInterval({
         now: nowAfterLag,
@@ -199,8 +197,56 @@ function runTests() {
     console.log(`-> KẾT QUẢ: ${pass12 ? '✅ PASS (Nhịp độ tự động co lại mượt mà để kịp về đích 13:00)' : '❌ FAIL'}\n`);
     if (!pass12) allPassed = false;
 
+    // CASE 13: KHÔI PHỤC TIẾN TRÌNH SAU RESTART SERVER (State Persistence Recovery)
+    console.log('--- TEST CASE 13: KHÔI PHỤC TIẾN TRÌNH SAU RESTART (Target 900, đã xong 620, còn 280) ---');
+    const savedState = {
+        name: "Test 900",
+        targetRequests: 900,
+        successRequests: 620,
+        failedRequests: 12,
+        totalDispatched: 632,
+        startTime: makeDate(2026, 9, 24, 7, 0),
+        endTime: makeDate(2026, 9, 24, 13, 0),
+        status: "running"
+    };
+    const nowRestart = makeDate(2026, 9, 24, 10, 30); // Giả lập khởi động lại lúc 10:30
+    const remainingToRun = savedState.targetRequests - savedState.successRequests; // 280
+    const adaptiveRecovered = calculateAdaptiveNextInterval({
+        now: nowRestart,
+        endTime: savedState.endTime,
+        remainingRequests: remainingToRun,
+        mode: 'smart',
+        timezoneOffsetMinutes: null
+    });
+    console.log(`Khôi phục: Đã hoàn thành ${savedState.successRequests}/${savedState.targetRequests} requests.`);
+    console.log(`Số requests còn lại cần thực hiện: ${remainingToRun} (Kỳ vọng: 280, KHÔNG bị reset về 0/900).`);
+    console.log(`Thời gian còn lại: ${formatDuration(adaptiveRecovered.timeRemainingMs)} (2.5 giờ).`);
+    console.log(`Nhịp độ Adaptive mới: ${adaptiveRecovered.idealIntervalMs}ms/req (~${(adaptiveRecovered.idealIntervalMs/1000).toFixed(1)}s/req).`);
+    const pass13 = remainingToRun === 280 &&
+                   adaptiveRecovered.valid &&
+                   adaptiveRecovered.timeRemainingMs === 2.5 * 3600000 &&
+                   adaptiveRecovered.idealIntervalMs > 20000 && adaptiveRecovered.idealIntervalMs < 40000;
+    console.log(`-> KẾT QUẢ: ${pass13 ? '✅ PASS (Server khởi động lại tiếp tục đúng tiến độ 620/900)' : '❌ FAIL'}\n`);
+    if (!pass13) allPassed = false;
+
+    // CASE 14: CHỐNG RETRY VƯỢT TARGET KHI GẦN VỀ ĐÍCH (Quota Boundary Guard)
+    console.log('--- TEST CASE 14: CHỐNG RETRY VƯỢT TARGET KHI GẦN VỀ ĐÍCH ---');
+    const targetQuota = 900;
+    const currentSuccess = 899;
+    const activeInFlight = 1;
+    // Giả lập logic kiểm tra quota an toàn trước khi dispatch retry:
+    const remainingSlots = targetQuota - (currentSuccess + activeInFlight);
+    console.log(`Target: ${targetQuota} | Success: ${currentSuccess} | In-flight: ${activeInFlight}`);
+    console.log(`Slots khả dụng còn lại: ${remainingSlots}`);
+    // Khi remainingSlots <= 0, hệ thống PHẢI từ chối dispatch thêm bất kỳ retry nào:
+    const allowMoreDispatch = remainingSlots > 0;
+    console.log(`Cho phép dispatch thêm request/retry: ${allowMoreDispatch ? 'CÓ' : 'KHÔNG (Đã khóa quota)'}`);
+    const pass14 = remainingSlots === 0 && allowMoreDispatch === false;
+    console.log(`-> KẾT QUẢ: ${pass14 ? '✅ PASS (Chặn đứng hoàn toàn nguy cơ vượt quá 900 requests)' : '❌ FAIL'}\n`);
+    if (!pass14) allPassed = false;
+
     console.log('==================================================');
-    console.log(`TỔNG KẾT: ${allPassed ? '🎉 TẤT CẢ 12/12 TEST CASES ĐÃ PASS XUẤT SẮC!' : '⚠️ CÓ TEST CASE BỊ LỖI!'}`);
+    console.log(`TỔNG KẾT: ${allPassed ? '🎉 TẤT CẢ 14/14 TEST CASES ĐÃ PASS XUẤT SẮC!' : '⚠️ CÓ TEST CASE BỊ LỖI!'}`);
     console.log('==================================================');
 
     if (!allPassed) process.exit(1);

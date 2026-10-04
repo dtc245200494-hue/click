@@ -15,6 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const globalTotalCampaigns = document.getElementById('globalTotalCampaigns');
     const globalRunningCampaigns = document.getElementById('globalRunningCampaigns');
     const globalSuccessRequests = document.getElementById('globalSuccessRequests');
+    const globalTotalDispatched = document.getElementById('globalTotalDispatched');
     const globalAvgLatency = document.getElementById('globalAvgLatency');
     const campaignCountBadge = document.getElementById('campaignCountBadge');
     const campaignsContainer = document.getElementById('campaignsContainer');
@@ -134,6 +135,8 @@ document.addEventListener('DOMContentLoaded', () => {
         globalRunningCampaigns.textContent = running;
         const totalSuccess = campaigns.reduce((acc, c) => acc + (c.successRequests || 0), 0);
         globalSuccessRequests.textContent = totalSuccess.toLocaleString('vi-VN');
+        const totalDispatched = campaigns.reduce((acc, c) => acc + (c.totalDispatched || (c.successRequests || 0) + (c.failedRequests || 0)), 0);
+        if (globalTotalDispatched) globalTotalDispatched.textContent = totalDispatched.toLocaleString('vi-VN');
         campaignCountBadge.textContent = `${campaigns.length} chiến dịch`;
     }
 
@@ -187,7 +190,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 <div class="progress-container">
                     <div class="progress-header">
-                        <span>Tiến độ: <b id="prog-count-${c.id}">${c.successRequests || 0} / ${c.targetRequests}</b> requests</span>
+                        <span>Tiến độ đạt target: <b id="prog-count-${c.id}">${c.successRequests || 0} / ${c.targetRequests}</b> requests (<span id="prog-dispatched-${c.id}">Tổng gửi: ${c.totalDispatched || 0} HTTP</span>)</span>
                         <span id="prog-pct-${c.id}">${percent}%</span>
                     </div>
                     <div class="progress-track">
@@ -197,6 +200,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 <div class="campaign-stats-pill-grid">
                     <div class="stat-pill">
+                        <span class="stat-pill-label">Mục tiêu</span>
+                        <span class="stat-pill-val val-target">${c.targetRequests}</span>
+                    </div>
+                    <div class="stat-pill">
                         <span class="stat-pill-label">Thành công</span>
                         <span class="stat-pill-val val-success" id="stat-succ-${c.id}">${c.successRequests || 0}</span>
                     </div>
@@ -205,11 +212,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="stat-pill-val val-failed" id="stat-fail-${c.id}">${c.failedRequests || 0}</span>
                     </div>
                     <div class="stat-pill">
-                        <span class="stat-pill-label">Còn lại</span>
-                        <span class="stat-pill-val val-remaining" id="stat-rem-${c.id}">${remaining}</span>
+                        <span class="stat-pill-label">Tổng đã gửi</span>
+                        <span class="stat-pill-val val-dispatched" id="stat-disp-${c.id}">${c.totalDispatched || 0}</span>
                     </div>
                     <div class="stat-pill">
-                        <span class="stat-pill-label">In-Flight</span>
+                        <span class="stat-pill-label">Đang xử lý</span>
                         <span class="stat-pill-val val-workers" id="stat-workers-${c.id}">0 / ${c.maxConcurrent || 3}</span>
                     </div>
                 </div>
@@ -328,9 +335,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (progCount) progCount.textContent = `${stats.success} / ${stats.target}`;
         if (progPct) progPct.textContent = `${stats.progressPercent}%`;
         if (progBar) progBar.style.width = `${stats.progressPercent}%`;
+        const progDisp = document.getElementById(`prog-dispatched-${id}`);
+        if (progDisp) progDisp.textContent = `Tổng gửi: ${stats.totalDispatched || stats.success} HTTP`;
         if (statSucc) statSucc.textContent = stats.success;
         if (statFail) statFail.textContent = stats.failed;
-        if (statRem) statRem.textContent = stats.remaining;
+        const statDisp = document.getElementById(`stat-disp-${id}`);
+        if (statDisp) statDisp.textContent = stats.totalDispatched || (stats.success + stats.failed);
         if (statWorkers) statWorkers.textContent = `${stats.activeWorkers} / ${stats.maxConcurrent}`;
 
         if (metaTime) {
@@ -356,6 +366,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (c) {
             c.successRequests = stats.success;
             c.failedRequests = stats.failed;
+            c.totalDispatched = stats.totalDispatched || (stats.success + stats.failed);
             c.remaining = stats.remaining;
             c.progressPercent = stats.progressPercent;
             c.status = stats.status;
