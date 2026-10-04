@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - click
+      - feat-browserless
 
 jobs:
   deploy:

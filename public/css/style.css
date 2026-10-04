@@ -391,6 +391,49 @@ body {
     border: 1px solid rgba(6, 182, 212, 0.35);
 }
 
+.mode-badge.browser {
+    background: rgba(168, 85, 247, 0.18);
+    color: #c084fc;
+    border: 1px solid rgba(168, 85, 247, 0.4);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.mode-badge.http {
+    background: rgba(59, 130, 246, 0.15);
+    color: #93c5fd;
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.badge-locked {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 6px;
+}
+
+.campaign-proxy-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #38bdf8;
+    background: rgba(56, 189, 248, 0.08);
+    border: 1px dashed rgba(56, 189, 248, 0.25);
+    padding: 4px 10px;
+    border-radius: 6px;
+    width: fit-content;
+}
+
 .status-tag {
     padding: 4px 11px;
     border-radius: 20px;

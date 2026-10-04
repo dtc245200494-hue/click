@@ -65,6 +65,11 @@
                 <span class="chip-label">Scheduler:</span>
                 <span class="chip-val status-val-ok" id="healthSchedulerVal">Active</span>
             </div>
+            <div class="health-chip" id="chipBrowserless">
+                <span class="pulse-indicator online" id="healthBrowserlessDot"></span>
+                <span class="chip-label">Browserless QA:</span>
+                <span class="chip-val status-val-ok" id="healthBrowserlessVal">🟢 Connected (Chromium)</span>
+            </div>
             <div class="health-chip chip-time" id="chipServerTime">
                 <i class="fa-regular fa-clock"></i>
                 <span class="chip-label">Giờ VN:</span>
@@ -213,9 +218,34 @@
             <form id="campaignForm">
                 <input type="hidden" id="editCampaignId" value="">
 
+                <!-- Locked Campaign Alert Banner -->
+                <div class="locked-banner" id="modalLockedBanner" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 14px; color: #fca5a5; font-size: 13px;">
+                    <i class="fa-solid fa-lock"></i> <strong>Chiến dịch đã khởi chạy (Locked):</strong> Các thông số cốt lõi (URL, Target, Chế độ phân bổ, Engine, Proxy, Thời gian) đã bị khóa an toàn để tránh xung đột lịch trình. Nhấn <strong>Reset</strong> ngoài danh sách nếu bạn muốn cấu hình lại từ đầu.
+                </div>
+
                 <div class="form-group">
                     <label for="inputName">Tên chiến dịch</label>
                     <input type="text" id="inputName" placeholder="VD: Test tải 07:00-13:00" required>
+                </div>
+
+                <!-- Execution Mode Selector -->
+                <div class="form-group">
+                    <label>Chế độ thực thi (Engine Architecture)</label>
+                    <div class="segmented-control mode-selector" id="wrapExecutionMode">
+                        <label class="segment-opt">
+                            <input type="radio" name="executionMode" value="browser" checked>
+                            <span class="segment-label">
+                                <i class="fa-solid fa-globe"></i> 🌐 Browser QA (Chromium)
+                            </span>
+                        </label>
+                        <label class="segment-opt">
+                            <input type="radio" name="executionMode" value="http">
+                            <span class="segment-label">
+                                <i class="fa-solid fa-bolt"></i> ⚡ HTTP Subrequest (Siêu nhẹ)
+                            </span>
+                        </label>
+                    </div>
+                    <small class="field-hint" id="execModeHint">Browser QA: Render DOM/JS thật bằng Browserless.io Chromium. HTTP: Subrequest Cloudflare fetch() tốc độ cao.</small>
                 </div>
 
                 <div class="form-group">
@@ -229,6 +259,29 @@
                     <div class="ping-result" id="pingResult"></div>
                 </div>
 
+                <!-- Decoupled Proxy / Gateway Manager -->
+                <div class="form-group proxy-config-group" style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 16px;">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                        <label for="inputProxyEnabled" style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 0;">
+                            <input type="checkbox" id="inputProxyEnabled" style="width: 16px; height: 16px; accent-color: var(--primary);">
+                            <span><i class="fa-solid fa-shuffle"></i> Xoay vòng Proxy / Gateway</span>
+                        </label>
+                        <span class="badge" style="font-size: 11px;">Decoupled Manager</span>
+                    </div>
+                    <div id="proxyFieldsWrap" style="display: none; margin-top: 10px;">
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="inputProxyGateways">Danh sách Gateway Proxies (Mỗi dòng một proxy)</label>
+                            <textarea id="inputProxyGateways" rows="3" placeholder="http://192.168.1.10:8080&#10;http://user:pass@10.0.0.5:3128" style="width: 100%; font-family: var(--font-mono); font-size: 12px; background: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 8px;"></textarea>
+                            <small class="field-hint">Hỗ trợ HTTP/HTTPS/SOCKS5 proxy (với hoặc không có user:pass).</small>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label for="inputProxyInterval">Chu kỳ xoay vòng proxy (giây)</label>
+                            <input type="number" id="inputProxyInterval" min="10" max="86400" value="300">
+                            <small class="field-hint">Ví dụ: 300s = 5 phút tự động chuyển gateway tiếp theo trước mỗi alarm tick.</small>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="form-row-2">
                     <div class="form-group">
                         <label for="inputTargetRequests">Tổng số requests</label>
@@ -237,7 +290,7 @@
 
                     <div class="form-group">
                         <label>Chế độ phân bổ</label>
-                        <div class="segmented-control">
+                        <div class="segmented-control" id="wrapScheduleMode">
                             <label class="segment-opt">
                                 <input type="radio" name="scheduleMode" value="smart" checked>
                                 <span class="segment-label">

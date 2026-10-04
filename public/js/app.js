@@ -53,6 +53,31 @@ document.addEventListener('DOMContentLoaded', () => {
     const previewDurationBadge = document.getElementById('previewDurationBadge');
     const modalPreviewBars = document.getElementById('modalPreviewBars');
 
+    // New decoupled features
+    const modalLockedBanner = document.getElementById('modalLockedBanner');
+    const inputProxyEnabled = document.getElementById('inputProxyEnabled');
+    const proxyFieldsWrap = document.getElementById('proxyFieldsWrap');
+    const inputProxyGateways = document.getElementById('inputProxyGateways');
+    const inputProxyInterval = document.getElementById('inputProxyInterval');
+    const execModeHint = document.getElementById('execModeHint');
+
+    if (inputProxyEnabled) {
+        inputProxyEnabled.addEventListener('change', () => {
+            if (proxyFieldsWrap) proxyFieldsWrap.style.display = inputProxyEnabled.checked ? 'block' : 'none';
+        });
+    }
+
+    document.querySelectorAll('input[name="executionMode"]').forEach(r => {
+        r.addEventListener('change', () => {
+            const mode = document.querySelector('input[name="executionMode"]:checked')?.value || 'browser';
+            if (execModeHint) {
+                execModeHint.textContent = mode === 'browser'
+                    ? 'Browser QA: Render DOM/JS thật bằng Browserless.io Chromium. Rất tự nhiên, lấy title và bắt chước phiên người dùng.'
+                    : 'HTTP: Subrequest Cloudflare fetch() tốc độ cao, siêu nhẹ cho kiểm thử tải lớn.';
+            }
+        });
+    });
+
     // ─── Toast System ─────────────────────────────────────────────────────────────
     function showToast(message, type = 'info') {
         const container = document.getElementById('toastContainer');
@@ -200,12 +225,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const percent = c.progressPercent || 0;
             const remaining = c.remaining !== undefined ? c.remaining : Math.max(0, c.targetRequests - (c.successRequests || 0));
+            const isBrowser = (c.executionMode === 'browser');
+            const hasStarted = Boolean(c.hasStarted);
+            const proxyEnabled = Boolean(c.proxyConfig && c.proxyConfig.enabled);
 
             card.innerHTML = `
                 <div class="campaign-header-row">
                     <div class="campaign-title-wrap">
                         <span class="campaign-name" title="${c.name}">${c.name}</span>
                         <span class="mode-badge ${c.scheduleMode}">${c.scheduleMode}</span>
+                        <span class="mode-badge ${isBrowser ? 'browser' : 'http'}">
+                            ${isBrowser ? '<i class="fa-solid fa-globe"></i> Browser QA' : '<i class="fa-solid fa-bolt"></i> HTTP'}
+                        </span>
+                        ${hasStarted ? '<span class="badge-locked" title="Chiến dịch đã chạy - Các thông số cốt lõi đã bị khóa an toàn"><i class="fa-solid fa-lock"></i> Locked</span>' : ''}
                     </div>
                     <span class="status-tag ${statusClass}" id="status-tag-${c.id}">
                         ${statusLabels[c.status] || c.status}
@@ -217,9 +249,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     <span>${c.targetUrl}</span>
                 </div>
 
+                ${proxyEnabled ? `
+                <div class="campaign-proxy-row">
+                    <i class="fa-solid fa-shuffle"></i>
+                    <span>Proxy: <strong>${c.lastGateway ? c.lastGateway.replace(/:\/\/[^@]*@/, '://***@') : (c.proxyConfig.currentGateway ? c.proxyConfig.currentGateway.replace(/:\/\/[^@]*@/, '://***@') : 'Đang khởi tạo...')}</strong></span>
+                    <span style="opacity: 0.7; font-size: 11px;">(Xoay mỗi ${c.proxyConfig.rotationIntervalSec || 300}s)</span>
+                </div>
+                ` : ''}
+
                 <div class="progress-container">
                     <div class="progress-header">
-                        <span>Tiến độ đạt target: <b id="prog-count-${c.id}">${c.successRequests || 0} / ${c.targetRequests}</b> requests (<span id="prog-dispatched-${c.id}">Tổng gửi: ${c.totalDispatched || 0} HTTP</span>)</span>
+                        <span>Tiến độ đạt target: <b id="prog-count-${c.id}">${c.successRequests || 0} / ${c.targetRequests}</b> requests (<span id="prog-dispatched-${c.id}">Tổng gửi: ${c.totalDispatched || 0} ${isBrowser ? 'Browsers' : 'HTTP'}</span>)</span>
                         <span id="prog-pct-${c.id}">${percent}%</span>
                     </div>
                     <div class="progress-track">
@@ -230,7 +270,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <!-- Live Subrequest Telemetry Box -->
                 <div class="campaign-telemetry-box">
                     <div class="telemetry-item">
-                        <span class="t-label"><i class="fa-solid fa-paper-plane"></i> Tổng HTTP đã gửi:</span>
+                        <span class="t-label"><i class="fa-solid fa-paper-plane"></i> Tổng ${isBrowser ? 'Browser Runs' : 'HTTP'}:</span>
                         <b class="t-val val-dispatched" id="stat-disp-${c.id}">${c.totalDispatched || 0}</b>
                     </div>
                     <div class="telemetry-item">
@@ -242,16 +282,22 @@ document.addEventListener('DOMContentLoaded', () => {
                         <b class="t-val val-failed" id="stat-fail-${c.id}">${c.failedRequests || 0}</b>
                     </div>
                     <div class="telemetry-item">
-                        <span class="t-label"><i class="fa-solid fa-clock-rotate-left"></i> Cron cuối:</span>
-                        <b class="t-val" id="stat-cron-${c.id}">${c.lastCronRunText || 'Chờ đợt tới...'}</b>
+                        <span class="t-label"><i class="fa-solid fa-clock-rotate-left"></i> Lần chạy cuối:</span>
+                        <b class="t-val" id="stat-cron-${c.id}">${c.lastAlarmRunText || c.lastCronRunText || 'Chờ đợt tới...'}</b>
                     </div>
                     <div class="telemetry-item span-full">
-                        <span class="t-label"><i class="fa-solid fa-bolt"></i> Request cuối:</span>
+                        <span class="t-label"><i class="fa-solid fa-bolt"></i> Kết quả cuối:</span>
                         <b class="t-val ${c.lastStatusCode && c.lastStatusCode >= 400 ? 'val-failed' : 'val-success'}" id="stat-req-${c.id}">
                             ${c.lastRequestText ? `${c.lastRequestText} (HTTP ${c.lastStatusCode || '--'} • ${c.lastLatencyMs || '--'}ms)` : 'Chưa gửi'}
                         </b>
                         ${c.lastError ? `<span class="telemetry-err">[${c.lastError}]</span>` : ''}
                     </div>
+                    ${(isBrowser && c.lastPageTitle) ? `
+                    <div class="telemetry-item span-full" style="color: #c084fc; font-size: 12px;">
+                        <span class="t-label"><i class="fa-solid fa-window-maximize"></i> DOM Page Title:</span>
+                        <b class="t-val" style="word-break: break-all; font-weight: 500;">"${escapeHtml(c.lastPageTitle)}"</b>
+                    </div>
+                    ` : ''}
                 </div>
 
                 <div class="campaign-stats-pill-grid">
@@ -261,7 +307,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                     <div class="stat-pill">
                         <span class="stat-pill-label">Luồng song song</span>
-                        <span class="stat-pill-val val-workers" id="stat-workers-${c.id}">${c.maxConcurrent || 3} luồng</span>
+                        <span class="stat-pill-val val-workers" id="stat-workers-${c.id}">${c.maxConcurrent || (isBrowser ? 2 : 3)} luồng</span>
                     </div>
                     <div class="stat-pill">
                         <span class="stat-pill-label">Thời gian còn</span>
@@ -278,7 +324,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         ? `<button class="btn btn-sm btn-warning btn-pause" data-id="${c.id}"><i class="fa-solid fa-pause"></i> Tạm dừng</button>`
                         : `<button class="btn btn-sm btn-success btn-start" data-id="${c.id}"><i class="fa-solid fa-play"></i> Bắt đầu</button>`
                     }
-                    <button class="btn btn-sm btn-secondary btn-reset" data-id="${c.id}" title="Reset số liệu về 0"><i class="fa-solid fa-rotate-left"></i> Reset</button>
+                    <button class="btn btn-sm btn-secondary btn-reset" data-id="${c.id}" title="Reset số liệu về 0 & Mở khóa cấu hình"><i class="fa-solid fa-rotate-left"></i> Reset</button>
                     <button class="btn btn-sm btn-secondary btn-chart" data-id="${c.id}"><i class="fa-solid fa-chart-simple"></i> Biểu đồ</button>
                     <button class="btn btn-sm btn-secondary btn-edit" data-id="${c.id}"><i class="fa-solid fa-pen"></i> Sửa</button>
                     <button class="btn btn-sm btn-danger btn-delete" data-id="${c.id}"><i class="fa-solid fa-trash"></i> Xóa</button>
@@ -527,23 +573,51 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ─── Modal & Form Management ──────────────────────────────────────────────────
+    function setFormInputsDisabled(disabled) {
+        inputTargetUrl.disabled = disabled;
+        inputTargetRequests.disabled = disabled;
+        inputStartTime.disabled = disabled;
+        inputEndTime.disabled = disabled;
+        document.querySelectorAll('input[name="scheduleMode"]').forEach(r => r.disabled = disabled);
+        document.querySelectorAll('input[name="executionMode"]').forEach(r => r.disabled = disabled);
+        if (inputProxyEnabled) inputProxyEnabled.disabled = disabled;
+        if (inputProxyGateways) inputProxyGateways.disabled = disabled;
+        if (inputProxyInterval) inputProxyInterval.disabled = disabled;
+        document.querySelectorAll('.btn-preset').forEach(b => b.disabled = disabled);
+    }
+
     function openCreateModal() {
         modalTitle.innerHTML = '<i class="fa-solid fa-sliders"></i> Tạo chiến dịch mới';
         editCampaignId.value = '';
-        inputName.value = `Test ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`;
-        inputTargetUrl.value = 'https://uanbidvak.com';
-        inputTargetRequests.value = 750;
-        inputMaxConcurrent.value = 3;
-        inputTimeoutMs.value = 8000;
+        inputName.value = `QA ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`;
+        inputTargetUrl.value = 'https://example.com';
+        inputTargetRequests.value = 50;
+        inputMaxConcurrent.value = 2;
+        inputTimeoutMs.value = 15000;
         pingResult.innerHTML = '';
 
-        // Default 6 hours duration
+        // Default 2 hours duration
         const now = new Date();
-        const end = new Date(now.getTime() + 6 * 3600000);
+        const end = new Date(now.getTime() + 2 * 3600000);
         inputStartTime.value = formatDateTimeLocal(now);
         inputEndTime.value = formatDateTimeLocal(end);
 
-        document.querySelector('input[name="scheduleMode"][value="smart"]').checked = true;
+        // Unlock all fields
+        if (modalLockedBanner) modalLockedBanner.style.display = 'none';
+        setFormInputsDisabled(false);
+
+        // Default to Browser QA
+        const browserRadio = document.querySelector('input[name="executionMode"][value="browser"]');
+        if (browserRadio) browserRadio.checked = true;
+        const smartRadio = document.querySelector('input[name="scheduleMode"][value="smart"]');
+        if (smartRadio) smartRadio.checked = true;
+
+        // Reset proxy fields
+        if (inputProxyEnabled) inputProxyEnabled.checked = false;
+        if (proxyFieldsWrap) proxyFieldsWrap.style.display = 'none';
+        if (inputProxyGateways) inputProxyGateways.value = '';
+        if (inputProxyInterval) inputProxyInterval.value = 300;
+
         updateModeDesc();
         updateModalPreview();
 
@@ -559,8 +633,8 @@ document.addEventListener('DOMContentLoaded', () => {
         inputName.value = c.name;
         inputTargetUrl.value = c.targetUrl;
         inputTargetRequests.value = c.targetRequests;
-        inputMaxConcurrent.value = c.maxConcurrent || 3;
-        inputTimeoutMs.value = c.timeoutMs || 8000;
+        inputMaxConcurrent.value = c.maxConcurrent || 2;
+        inputTimeoutMs.value = c.timeoutMs || 15000;
         pingResult.innerHTML = '';
 
         inputStartTime.value = formatDateTimeLocal(new Date(c.startTime));
@@ -568,6 +642,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const modeRadio = document.querySelector(`input[name="scheduleMode"][value="${c.scheduleMode}"]`);
         if (modeRadio) modeRadio.checked = true;
+
+        const execRadio = document.querySelector(`input[name="executionMode"][value="${c.executionMode || 'http'}"]`);
+        if (execRadio) execRadio.checked = true;
+
+        // Proxy config
+        if (inputProxyEnabled) {
+            inputProxyEnabled.checked = Boolean(c.proxyConfig?.enabled);
+            if (proxyFieldsWrap) proxyFieldsWrap.style.display = c.proxyConfig?.enabled ? 'block' : 'none';
+        }
+        if (inputProxyGateways) {
+            inputProxyGateways.value = Array.isArray(c.proxyConfig?.gateways) ? c.proxyConfig.gateways.join('\n') : '';
+        }
+        if (inputProxyInterval) {
+            inputProxyInterval.value = c.proxyConfig?.rotationIntervalSec || 300;
+        }
+
+        // Configuration locking check
+        if (c.hasStarted) {
+            if (modalLockedBanner) modalLockedBanner.style.display = 'block';
+            setFormInputsDisabled(true);
+        } else {
+            if (modalLockedBanner) modalLockedBanner.style.display = 'none';
+            setFormInputsDisabled(false);
+        }
 
         updateModeDesc();
         updateModalPreview();
@@ -662,25 +760,41 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
+            const mode = document.querySelector('input[name="executionMode"]:checked')?.value || 'http';
+            const firstProxy = (inputProxyEnabled && inputProxyEnabled.checked && inputProxyGateways)
+                ? inputProxyGateways.value.split('\n').map(s => s.trim()).filter(Boolean)[0] || null
+                : null;
+
             btnTestUrl.disabled = true;
-            btnTestUrl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Đang test...';
+            btnTestUrl.innerHTML = mode === 'browser'
+                ? '<i class="fa-solid fa-spinner fa-spin"></i> Chromium QA...'
+                : '<i class="fa-solid fa-spinner fa-spin"></i> Test Ping...';
             pingResult.className = 'ping-result';
-            pingResult.textContent = 'Đang kiểm tra kết nối...';
+            pingResult.textContent = mode === 'browser'
+                ? 'Đang khởi chạy Chromium trên Browserless.io...'
+                : 'Đang gửi HTTP subrequest qua Cloudflare Worker...';
 
             try {
                 const res = await fetch('/api/test-url', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, timeoutMs: 6000 })
+                    body: JSON.stringify({
+                        url,
+                        mode,
+                        timeoutMs: mode === 'browser' ? 15000 : 6000,
+                        proxyUrl: firstProxy
+                    })
                 });
                 const d = await res.json();
 
                 if (d.success) {
                     pingResult.className = 'ping-result success';
-                    pingResult.innerHTML = `<i class="fa-solid fa-circle-check"></i> Kết nối thành công (HTTP ${d.statusCode}, ${d.latencyMs}ms)`;
+                    const modeLabel = mode === 'browser' ? '🌐 Browser QA' : '⚡ HTTP';
+                    const titleText = d.pageTitle ? ` • "${d.pageTitle}"` : '';
+                    pingResult.innerHTML = `<i class="fa-solid fa-circle-check"></i> ${modeLabel} OK (HTTP ${d.statusCode}, ${d.latencyMs}ms)${titleText}`;
                 } else {
                     pingResult.className = 'ping-result error';
-                    pingResult.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> Không kết nối được: ${d.error || `HTTP ${d.statusCode}`} (${d.latencyMs}ms)`;
+                    pingResult.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> Lỗi kết nối: ${d.error || `HTTP ${d.statusCode}`} (${d.latencyMs}ms)`;
                 }
             } catch (err) {
                 pingResult.className = 'ping-result error';
@@ -709,11 +823,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 name: inputName.value.trim(),
                 targetUrl: inputTargetUrl.value.trim(),
                 targetRequests: parseInt(inputTargetRequests.value, 10),
-                scheduleMode: document.querySelector('input[name="scheduleMode"]:checked').value,
+                scheduleMode: document.querySelector('input[name="scheduleMode"]:checked')?.value || 'smart',
+                executionMode: document.querySelector('input[name="executionMode"]:checked')?.value || 'browser',
+                proxyConfig: {
+                    enabled: Boolean(inputProxyEnabled && inputProxyEnabled.checked),
+                    gateways: inputProxyGateways ? inputProxyGateways.value.split('\n').map(s => s.trim()).filter(Boolean) : [],
+                    rotationIntervalSec: parseInt(inputProxyInterval?.value, 10) || 300
+                },
                 startTime: startMs,
                 endTime: endMs,
-                maxConcurrent: parseInt(inputMaxConcurrent.value, 10) || 3,
-                timeoutMs: parseInt(inputTimeoutMs.value, 10) || 8000,
+                maxConcurrent: parseInt(inputMaxConcurrent.value, 10) || 2,
+                timeoutMs: parseInt(inputTimeoutMs.value, 10) || 15000,
                 timezoneOffsetMinutes: new Date().getTimezoneOffset()
             };
 
@@ -851,6 +971,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else {
                     healthSchedulerVal.textContent = `⚪ ${engineName} (0 đang chạy)`;
                     healthSchedulerDot.className = 'pulse-indicator idle';
+                }
+            }
+
+            // Browserless QA status
+            const healthBrowserlessVal = document.getElementById('healthBrowserlessVal');
+            const healthBrowserlessDot = document.getElementById('healthBrowserlessDot');
+            if (healthBrowserlessVal && healthBrowserlessDot) {
+                if (data.browserless && data.browserless.status === 'connected') {
+                    healthBrowserlessVal.textContent = '🟢 Connected (Chromium)';
+                    healthBrowserlessDot.className = 'pulse-indicator online';
+                } else {
+                    healthBrowserlessVal.textContent = '⚪ Offline';
+                    healthBrowserlessDot.className = 'pulse-indicator offline';
                 }
             }
         } catch (e) {
