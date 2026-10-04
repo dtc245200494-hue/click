@@ -452,7 +452,10 @@ export class CampaignRunnerDO {
             let res;
             const mode = campaign.executionMode || 'http';
             if (mode === 'browser') {
-                const token = (this.env && (this.env.BROWSERLESS_TOKEN || this.env.DEFAULT_BROWSERLESS_TOKEN)) || '2VNZv2Y037G6Qlv8f96550a30de21a58e84cc6be49fd388f2';
+                const token = this.env?.BROWSERLESS_TOKEN;
+                if (!token) {
+                    throw new Error('BROWSERLESS_TOKEN chưa được cấu hình trong Cloudflare Secrets');
+                }
                 res = await executeBrowserlessJob(campaign.targetUrl, token, {
                     timeoutMs: campaign.timeoutMs || 15000,
                     proxyUrl: activeGateway
@@ -591,7 +594,13 @@ export class CampaignRunnerDO {
             if (!campaign) return new Response(JSON.stringify({ success: false, message: 'Chiến dịch không tồn tại' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
 
             const now = Date.now();
-            if (action === 'start') {
+            if (action === 'start' || action === 'resume') {
+                if (['completed', 'expired'].includes(campaign.status)) {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        message: 'Chiến dịch đã hoàn thành hoặc hết giờ. Hãy dùng chức năng Nhân bản (Clone) để tạo chiến dịch mới.'
+                    }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+                }
                 campaign.status = now >= campaign.startTime ? 'running' : 'waiting';
                 if (!campaign.actualStartTime && campaign.status === 'running') campaign.actualStartTime = now;
                 if (campaign.status === 'running') {
@@ -601,6 +610,9 @@ export class CampaignRunnerDO {
                     await this.storage.setAlarm(campaign.startTime);
                 }
             } else if (action === 'pause') {
+                if (campaign.status !== 'running') {
+                    return new Response(JSON.stringify({ success: false, message: 'Chỉ có thể tạm dừng chiến dịch đang chạy' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+                }
                 campaign.status = 'paused';
                 await this.storage.deleteAlarm();
             } else if (action === 'stop') {
@@ -608,10 +620,18 @@ export class CampaignRunnerDO {
                 campaign.actualEndTime = now;
                 await this.storage.deleteAlarm();
             } else if (action === 'reset') {
+                // Strict check: Running and Paused MUST NOT be reset directly!
+                if (['running', 'paused'].includes(campaign.status)) {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        message: 'Phải Dừng (Stop) chiến dịch trước khi Reset.'
+                    }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+                }
+                campaign.status = 'stopped';
+                campaign.hasStarted = false; // Reset unlocks config
                 campaign.successRequests = 0;
                 campaign.failedRequests = 0;
                 campaign.totalDispatched = 0;
-                campaign.hasStarted = false; // Reset unlocks config
                 campaign.lastAlarmRun = null;
                 campaign.lastAlarmRunText = null;
                 campaign.lastRequestTime = null;
@@ -628,15 +648,12 @@ export class CampaignRunnerDO {
                     campaign.proxyConfig.lastRotatedAt = null;
                     campaign.proxyConfig.nextRotationAt = null;
                 }
+                campaign.actualStartTime = null;
                 campaign.actualEndTime = null;
                 campaign.recentLogs = [];
-                campaign.status = now >= campaign.startTime ? 'running' : 'waiting';
-                if (campaign.status === 'running') {
-                    campaign.hasStarted = true;
-                    await this.storage.setAlarm(now + 150);
-                } else {
-                    await this.storage.setAlarm(campaign.startTime);
-                }
+                await this.storage.deleteAlarm();
+            } else {
+                return new Response(JSON.stringify({ success: false, message: `Thao tác '${action}' không hợp lệ` }), { status: 400, headers: { 'Content-Type': 'application/json' } });
             }
             await this.storage.put('campaign', campaign);
             return new Response(JSON.stringify({ success: true, status: campaign.status, hasStarted: campaign.hasStarted }), { headers: { 'Content-Type': 'application/json' } });
@@ -647,9 +664,21 @@ export class CampaignRunnerDO {
             const campaign = await this.storage.get('campaign');
             if (!campaign) return new Response(JSON.stringify({ success: false, message: 'Chiến dịch không tồn tại' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
 
-            // State Machine Locking: Check if locked
+            // 1. Strict state check: CANNOT edit while running or paused
+            if (['running', 'paused'].includes(campaign.status)) {
+                return new Response(JSON.stringify({
+                    success: false,
+                    message: 'Chiến dịch đang chạy hoặc tạm dừng. Không thể chỉnh sửa cấu hình. Hãy Dừng (Stop) trước.'
+                }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+            }
+
+            // 2. State Machine Locking: Once started, lock all runtime fields
             if (campaign.hasStarted) {
-                const lockedFields = ['targetUrl', 'targetRequests', 'scheduleMode', 'startTime', 'endTime', 'executionMode', 'proxyConfig'];
+                const lockedFields = [
+                    'targetUrl', 'targetRequests', 'scheduleMode', 'startTime', 'endTime',
+                    'executionMode', 'proxyConfig', 'maxConcurrent', 'timeoutMs',
+                    'maxRetries', 'timezoneOffsetMinutes'
+                ];
                 const illegalFields = lockedFields.filter(field => {
                     if (body[field] === undefined) return false;
                     return JSON.stringify(body[field]) !== JSON.stringify(campaign[field]);
@@ -658,7 +687,7 @@ export class CampaignRunnerDO {
                 if (illegalFields.length > 0) {
                     return new Response(JSON.stringify({
                         success: false,
-                        message: `Chiến dịch đã khởi chạy (Locked 🔒). Không thể thay đổi các trường cốt lõi: ${illegalFields.join(', ')}. Hãy nhấn "Reset" để mở khóa hoặc tạo chiến dịch mới.`
+                        message: `Chiến dịch đã từng chạy (Locked 🔒). Không thể thay đổi các trường: ${illegalFields.join(', ')}. Chỉ cho phép sửa tên chiến dịch. Hãy Reset sau khi Dừng nếu muốn cấu hình lại từ đầu, hoặc dùng chức năng Nhân bản.`
                     }), { status: 400, headers: { 'Content-Type': 'application/json' } });
                 }
             }
@@ -669,6 +698,13 @@ export class CampaignRunnerDO {
         }
 
         if (path === '/delete' && request.method === 'DELETE') {
+            const campaign = await this.storage.get('campaign');
+            if (campaign && ['running', 'paused'].includes(campaign.status)) {
+                return new Response(JSON.stringify({
+                    success: false,
+                    message: 'Không thể xóa chiến dịch đang chạy hoặc tạm dừng. Hãy Dừng (Stop) trước.'
+                }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+            }
             await this.storage.deleteAlarm();
             await this.storage.deleteAll();
             return new Response(JSON.stringify({ success: true }), { headers: { 'Content-Type': 'application/json' } });
@@ -993,7 +1029,7 @@ async function handleFetch(request, env, ctx) {
             engineType: isDO ? 'durable_objects' : 'cron',
             browserless: {
                 status: 'connected',
-                tokenConfigured: Boolean(env?.BROWSERLESS_TOKEN || env?.DEFAULT_BROWSERLESS_TOKEN),
+                tokenConfigured: Boolean(env?.BROWSERLESS_TOKEN),
                 engine: 'Stateless Headless Chromium'
             },
             supportedModes: ['http', 'browser'],
@@ -1172,10 +1208,14 @@ async function handleFetch(request, env, ctx) {
 
         if (env && env.CAMPAIGN_RUNNER) {
             if (request.method === 'DELETE') {
-                await removeRegistryId(env, id);
                 const doId = env.CAMPAIGN_RUNNER.idFromName(id);
                 const stub = env.CAMPAIGN_RUNNER.get(doId);
-                await stub.fetch('http://do/delete', { method: 'DELETE' });
+                const res = await stub.fetch('http://do/delete', { method: 'DELETE' });
+                const d = await res.json();
+                if (!res.ok) {
+                    return new Response(JSON.stringify(d), { status: res.status, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+                }
+                await removeRegistryId(env, id);
                 return new Response(JSON.stringify({ success: true, message: `Đã xóa chiến dịch ${id}` }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
             }
 
@@ -1193,15 +1233,22 @@ async function handleFetch(request, env, ctx) {
             }
 
             if (request.method === 'POST') {
+                let reqAction = action;
+                if (!reqAction) {
+                    try {
+                        const b = await request.clone().json();
+                        reqAction = b.action;
+                    } catch (_) {}
+                }
                 const doId = env.CAMPAIGN_RUNNER.idFromName(id);
                 const stub = env.CAMPAIGN_RUNNER.get(doId);
                 const res = await stub.fetch('http://do/action', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action })
+                    body: JSON.stringify({ action: reqAction })
                 });
                 const d = await res.json();
-                return new Response(JSON.stringify(d), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+                return new Response(JSON.stringify(d), { status: res.status, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
             }
         }
 
@@ -1212,6 +1259,12 @@ async function handleFetch(request, env, ctx) {
         const campaign = list[index];
 
         if (request.method === 'DELETE') {
+            if (['running', 'paused'].includes(campaign.status)) {
+                return new Response(JSON.stringify({
+                    success: false,
+                    message: 'Không thể xóa chiến dịch đang chạy hoặc tạm dừng. Hãy Dừng (Stop) trước.'
+                }), { status: 409, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+            }
             list.splice(index, 1);
             await saveCampaigns(env, list);
             return new Response(JSON.stringify({ success: true, message: `Đã xóa chiến dịch ${id}` }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
@@ -1220,14 +1273,26 @@ async function handleFetch(request, env, ctx) {
         if (request.method === 'PUT') {
             const body = await request.json();
 
-            // State Machine Locking
+            // Strict state check: CANNOT edit while running or paused
+            if (['running', 'paused'].includes(campaign.status)) {
+                return new Response(JSON.stringify({
+                    success: false,
+                    message: 'Chiến dịch đang chạy hoặc tạm dừng. Không thể chỉnh sửa cấu hình. Hãy Dừng (Stop) trước.'
+                }), { status: 409, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+            }
+
+            // State Machine Locking: Once started, lock all runtime fields
             if (campaign.hasStarted) {
-                const lockedFields = ['targetUrl', 'targetRequests', 'scheduleMode', 'startTime', 'endTime', 'executionMode', 'proxyConfig'];
+                const lockedFields = [
+                    'targetUrl', 'targetRequests', 'scheduleMode', 'startTime', 'endTime',
+                    'executionMode', 'proxyConfig', 'maxConcurrent', 'timeoutMs',
+                    'maxRetries', 'timezoneOffsetMinutes'
+                ];
                 const illegalFields = lockedFields.filter(f => body[f] !== undefined && JSON.stringify(body[f]) !== JSON.stringify(campaign[f]));
                 if (illegalFields.length > 0) {
                     return new Response(JSON.stringify({
                         success: false,
-                        message: `Chiến dịch đã khởi chạy (Locked 🔒). Không thể thay đổi các trường cốt lõi: ${illegalFields.join(', ')}. Hãy nhấn "Reset" để mở khóa hoặc tạo chiến dịch mới.`
+                        message: `Chiến dịch đã từng chạy (Locked 🔒). Không thể thay đổi các trường: ${illegalFields.join(', ')}. Chỉ cho phép sửa tên chiến dịch. Hãy Reset sau khi Dừng nếu muốn cấu hình lại từ đầu, hoặc dùng chức năng Nhân bản.`
                     }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
                 }
             }
@@ -1238,20 +1303,44 @@ async function handleFetch(request, env, ctx) {
         }
 
         if (request.method === 'POST') {
-            if (action === 'start') {
-                campaign.status = Date.now() >= campaign.startTime ? 'running' : 'waiting';
-                if (!campaign.actualStartTime && campaign.status === 'running') campaign.actualStartTime = Date.now();
+            let reqAction = action;
+            if (!reqAction) {
+                try {
+                    const b = await request.clone().json();
+                    reqAction = b.action;
+                } catch (_) {}
+            }
+            const now = Date.now();
+            if (reqAction === 'start' || reqAction === 'resume') {
+                if (['completed', 'expired'].includes(campaign.status)) {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        message: 'Chiến dịch đã hoàn thành hoặc hết giờ. Hãy dùng chức năng Nhân bản (Clone) để tạo chiến dịch mới.'
+                    }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+                }
+                campaign.status = now >= campaign.startTime ? 'running' : 'waiting';
+                if (!campaign.actualStartTime && campaign.status === 'running') campaign.actualStartTime = now;
                 if (campaign.status === 'running') campaign.hasStarted = true;
-            } else if (action === 'pause') {
+            } else if (reqAction === 'pause') {
+                if (campaign.status !== 'running') {
+                    return new Response(JSON.stringify({ success: false, message: 'Chỉ có thể tạm dừng chiến dịch đang chạy' }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+                }
                 campaign.status = 'paused';
-            } else if (action === 'stop') {
+            } else if (reqAction === 'stop') {
                 campaign.status = 'stopped';
-                campaign.actualEndTime = Date.now();
-            } else if (action === 'reset') {
+                campaign.actualEndTime = now;
+            } else if (reqAction === 'reset') {
+                if (['running', 'paused'].includes(campaign.status)) {
+                    return new Response(JSON.stringify({
+                        success: false,
+                        message: 'Phải Dừng (Stop) chiến dịch trước khi Reset.'
+                    }), { status: 409, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+                }
+                campaign.status = 'stopped';
+                campaign.hasStarted = false;
                 campaign.successRequests = 0;
                 campaign.failedRequests = 0;
                 campaign.totalDispatched = 0;
-                campaign.hasStarted = false;
                 campaign.lastCronRun = null;
                 campaign.lastCronRunText = null;
                 campaign.lastRequestTime = null;
@@ -1262,10 +1351,11 @@ async function handleFetch(request, env, ctx) {
                 campaign.lastPageTitle = null;
                 campaign.lastFinalUrl = null;
                 campaign.lastGateway = null;
+                campaign.actualStartTime = null;
                 campaign.actualEndTime = null;
                 campaign.recentLogs = [];
-                campaign.status = Date.now() >= campaign.startTime ? 'running' : 'waiting';
-                if (campaign.status === 'running') campaign.hasStarted = true;
+            } else {
+                return new Response(JSON.stringify({ success: false, message: `Thao tác '${reqAction}' không hợp lệ` }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
             }
             await saveCampaigns(env, list);
             return new Response(JSON.stringify({ success: true, status: campaign.status, hasStarted: campaign.hasStarted }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
@@ -1278,7 +1368,13 @@ async function handleFetch(request, env, ctx) {
         const testMode = body.mode === 'browser' ? 'browser' : 'http';
         let result;
         if (testMode === 'browser') {
-            const token = (env && (env.BROWSERLESS_TOKEN || env.DEFAULT_BROWSERLESS_TOKEN)) || '2VNZv2Y037G6Qlv8f96550a30de21a58e84cc6be49fd388f2';
+            const token = env?.BROWSERLESS_TOKEN;
+            if (!token) {
+                return new Response(JSON.stringify({
+                    success: false,
+                    error: 'BROWSERLESS_TOKEN chưa được cấu hình trong Cloudflare Secrets'
+                }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+            }
             result = await executeBrowserlessJob(body.url, token, {
                 timeoutMs: parseInt(body.timeoutMs, 10) || 15000,
                 proxyUrl: body.proxyUrl || null

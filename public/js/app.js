@@ -194,6 +194,89 @@ document.addEventListener('DOMContentLoaded', () => {
         campaignCountBadge.textContent = `${campaigns.length} chiến dịch`;
     }
 
+    // ─── Button Matrix & Actions Helper ──────────────────────────────────────────
+    function renderCampaignActionButtons(c) {
+        const status = c.status || 'waiting';
+        let buttonsHtml = '';
+        let lockHintHtml = '';
+
+        const btnStart = `<button class="btn btn-sm btn-success btn-start" data-id="${c.id}" title="Khởi chạy chiến dịch"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Bắt đầu</button>`;
+        const btnPause = `<button class="btn btn-sm btn-warning btn-pause" data-id="${c.id}" title="Tạm dừng"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> Tạm dừng</button>`;
+        const btnResume = `<button class="btn btn-sm btn-success btn-resume" data-id="${c.id}" title="Tiếp tục chạy"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Tiếp tục</button>`;
+        const btnStop = `<button class="btn btn-sm btn-danger btn-stop" data-id="${c.id}" title="Dừng chiến dịch"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg> Dừng</button>`;
+        const btnReset = `<button class="btn btn-sm btn-secondary btn-reset" data-id="${c.id}" title="Reset số liệu về 0 & Mở khóa cấu hình"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg> Reset</button>`;
+        const btnClone = `<button class="btn btn-sm btn-primary-glass btn-clone" data-id="${c.id}" title="Nhân bản cấu hình sang chiến dịch mới"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> Nhân bản</button>`;
+        const btnChart = `<button class="btn btn-sm btn-secondary btn-chart" data-id="${c.id}" title="Xem biểu đồ"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Biểu đồ</button>`;
+        const btnEdit = `<button class="btn btn-sm btn-secondary btn-edit" data-id="${c.id}" title="Chỉnh sửa"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> Sửa</button>`;
+        const btnDelete = `<button class="btn btn-sm btn-danger btn-delete" data-id="${c.id}" title="Xóa"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Xóa</button>`;
+
+        if (status === 'running') {
+            buttonsHtml = `${btnPause} ${btnStop} ${btnChart}`;
+            lockHintHtml = `<div class="lock-status-hint running"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> 🔒 Đang chạy - cấu hình đã khóa</div>`;
+        } else if (status === 'paused') {
+            buttonsHtml = `${btnResume} ${btnStop} ${btnChart}`;
+            lockHintHtml = `<div class="lock-status-hint paused"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> 🔒 Đang tạm dừng - cấu hình vẫn khóa</div>`;
+        } else if (status === 'stopped') {
+            buttonsHtml = `${btnReset} ${btnClone} ${btnChart} ${btnDelete}`;
+        } else if (status === 'completed' || status === 'expired') {
+            buttonsHtml = `${btnClone} ${btnChart} ${btnDelete}`;
+        } else {
+            // waiting (chưa chạy)
+            buttonsHtml = `${btnStart} ${btnEdit} ${btnChart} ${btnDelete}`;
+        }
+
+        return { buttonsHtml, lockHintHtml };
+    }
+
+    function cloneCampaignToModal(campaignId) {
+        const c = campaigns.find(item => String(item.id) === String(campaignId));
+        if (!c) return;
+
+        openCreateModal(); // Resets modal to create mode (editCampaignId = '')
+        modalTitle.innerHTML = `<i class="fa-solid fa-copy"></i> Nhân bản chiến dịch ${campaignId}`;
+        
+        // Fill values from source campaign
+        inputName.value = `[Clone] ${c.name || 'Chiến dịch'}`;
+        inputTargetUrl.value = c.targetUrl || 'https://example.com';
+        inputTargetRequests.value = c.targetRequests || 100;
+        inputMaxConcurrent.value = c.maxConcurrent || 2;
+        inputTimeoutMs.value = c.timeoutMs || 15000;
+
+        // Schedule new times: start = now, end = now + (c.endTime - c.startTime) or 2 hours
+        const origDuration = (c.endTime && c.startTime && c.endTime > c.startTime) 
+            ? (c.endTime - c.startTime) 
+            : 2 * 3600000;
+        const now = new Date();
+        const end = new Date(now.getTime() + origDuration);
+        inputStartTime.value = formatDateTimeLocal(now);
+        inputEndTime.value = formatDateTimeLocal(end);
+
+        const modeRadio = document.querySelector(`input[name="scheduleMode"][value="${c.scheduleMode || 'smart'}"]`);
+        if (modeRadio) modeRadio.checked = true;
+
+        const execRadio = document.querySelector(`input[name="executionMode"][value="${c.executionMode || 'browser'}"]`);
+        if (execRadio) execRadio.checked = true;
+
+        if (inputProxyEnabled) {
+            inputProxyEnabled.checked = Boolean(c.proxyConfig?.enabled);
+            if (proxyFieldsWrap) proxyFieldsWrap.style.display = c.proxyConfig?.enabled ? 'block' : 'none';
+        }
+        if (inputProxyGateways) {
+            inputProxyGateways.value = Array.isArray(c.proxyConfig?.gateways) ? c.proxyConfig.gateways.join('\n') : '';
+        }
+        if (inputProxyInterval) {
+            inputProxyInterval.value = c.proxyConfig?.rotationIntervalSec || 300;
+        }
+
+        // Clone creates a new campaign so all fields are unlocked
+        if (modalLockedBanner) modalLockedBanner.style.display = 'none';
+        setFormInputsDisabled(false);
+
+        updateModeDesc();
+        updateModalPreview();
+        showToast(`Đã sao chép cấu hình từ chiến dịch ${campaignId}. Bạn có thể chỉnh sửa trước khi lưu.`, 'info');
+    }
+
     // ─── Render Campaign Cards ────────────────────────────────────────────────────
     function renderCampaignsList() {
         if (!campaignsContainer) return;
@@ -228,6 +311,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const isBrowser = (c.executionMode === 'browser');
             const hasStarted = Boolean(c.hasStarted);
             const proxyEnabled = Boolean(c.proxyConfig && c.proxyConfig.enabled);
+            const { buttonsHtml, lockHintHtml } = renderCampaignActionButtons(c);
 
             card.innerHTML = `
                 <div class="campaign-header-row">
@@ -322,15 +406,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 </div>
 
+                ${lockHintHtml}
                 <div class="campaign-actions-row">
-                    ${c.status === 'running'
-                        ? `<button class="btn btn-sm btn-warning btn-pause" data-id="${c.id}"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> Tạm dừng</button>`
-                        : `<button class="btn btn-sm btn-success btn-start" data-id="${c.id}"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Bắt đầu</button>`
-                    }
-                    <button class="btn btn-sm btn-secondary btn-reset" data-id="${c.id}" title="Reset số liệu về 0 & Mở khóa cấu hình"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg> Reset</button>
-                    <button class="btn btn-sm btn-secondary btn-chart" data-id="${c.id}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Biểu đồ</button>
-                    <button class="btn btn-sm btn-secondary btn-edit" data-id="${c.id}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> Sửa</button>
-                    <button class="btn btn-sm btn-danger btn-delete" data-id="${c.id}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Xóa</button>
+                    ${buttonsHtml}
                 </div>
             `;
 
@@ -354,9 +432,29 @@ document.addEventListener('DOMContentLoaded', () => {
                 try {
                     const res = await fetch(`/api/campaigns/${id}/start`, { method: 'POST' });
                     const d = await res.json();
-                    if (d.success) showToast(`Đã khởi động chiến dịch ${id}`, 'success');
-                    else showToast(d.message, 'error');
+                    if (d.success) {
+                        showToast(`Đã khởi động chiến dịch ${id}`, 'success');
+                        await loadCampaigns();
+                    } else {
+                        showToast(d.message || 'Lỗi khởi động chiến dịch', 'error');
+                    }
                 } catch (e) { showToast('Lỗi gửi lệnh bắt đầu', 'error'); }
+            };
+        });
+
+        document.querySelectorAll('.btn-resume').forEach(btn => {
+            btn.onclick = async () => {
+                const id = btn.dataset.id;
+                try {
+                    const res = await fetch(`/api/campaigns/${id}/resume`, { method: 'POST' });
+                    const d = await res.json();
+                    if (d.success) {
+                        showToast(`Đã tiếp tục chiến dịch ${id}`, 'success');
+                        await loadCampaigns();
+                    } else {
+                        showToast(d.message || 'Lỗi tiếp tục chiến dịch', 'error');
+                    }
+                } catch (e) { showToast('Lỗi gửi lệnh tiếp tục', 'error'); }
             };
         });
 
@@ -366,20 +464,53 @@ document.addEventListener('DOMContentLoaded', () => {
                 try {
                     const res = await fetch(`/api/campaigns/${id}/pause`, { method: 'POST' });
                     const d = await res.json();
-                    if (d.success) showToast(`Đã tạm dừng chiến dịch ${id}`, 'info');
+                    if (d.success) {
+                        showToast(`Đã tạm dừng chiến dịch ${id}`, 'info');
+                        await loadCampaigns();
+                    } else {
+                        showToast(d.message || 'Lỗi tạm dừng', 'error');
+                    }
                 } catch (e) { showToast('Lỗi gửi lệnh tạm dừng', 'error'); }
+            };
+        });
+
+        document.querySelectorAll('.btn-stop').forEach(btn => {
+            btn.onclick = async () => {
+                const id = btn.dataset.id;
+                if (!confirm(`Bạn có chắc muốn Dừng hẳn chiến dịch ${id}? Sau khi dừng, bạn có thể Reset hoặc Nhân bản.`)) return;
+                try {
+                    const res = await fetch(`/api/campaigns/${id}/stop`, { method: 'POST' });
+                    const d = await res.json();
+                    if (d.success) {
+                        showToast(`Đã dừng chiến dịch ${id}`, 'info');
+                        await loadCampaigns();
+                    } else {
+                        showToast(d.message || 'Lỗi dừng chiến dịch', 'error');
+                    }
+                } catch (e) { showToast('Lỗi gửi lệnh dừng', 'error'); }
             };
         });
 
         document.querySelectorAll('.btn-reset').forEach(btn => {
             btn.onclick = async () => {
                 const id = btn.dataset.id;
-                if (!confirm(`Bạn có chắc muốn reset lại số liệu chiến dịch ${id}?`)) return;
+                if (!confirm(`Bạn có chắc muốn reset lại số liệu chiến dịch ${id}? Thao tác này sẽ đưa tiến độ về 0 và mở khóa cấu hình.`)) return;
                 try {
                     const res = await fetch(`/api/campaigns/${id}/reset`, { method: 'POST' });
                     const d = await res.json();
-                    if (d.success) showToast(`Đã reset tiến trình chiến dịch ${id}`, 'success');
+                    if (d.success) {
+                        showToast(`Đã reset tiến trình chiến dịch ${id}`, 'success');
+                        await loadCampaigns();
+                    } else {
+                        showToast(d.message || 'Lỗi reset', 'error');
+                    }
                 } catch (e) { showToast('Lỗi reset', 'error'); }
+            };
+        });
+
+        document.querySelectorAll('.btn-clone').forEach(btn => {
+            btn.onclick = () => {
+                cloneCampaignToModal(btn.dataset.id);
             };
         });
 
@@ -387,7 +518,8 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.onclick = () => {
                 selectCampaignForChart(btn.dataset.id);
                 // Switch to chart tab
-                document.querySelector('.monitor-tab-btn[data-tab="tabChart"]').click();
+                const chartTab = document.querySelector('.monitor-tab-btn[data-tab="tabChart"]');
+                if (chartTab) chartTab.click();
             };
         });
 
@@ -408,6 +540,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         showToast(`Đã xóa chiến dịch ${id}`, 'info');
                         await loadCampaigns();
                         if (typeof pollSystemHealth === 'function') pollSystemHealth();
+                    } else {
+                        showToast(d.message || 'Không thể xóa chiến dịch', 'error');
                     }
                 } catch (e) { showToast('Lỗi xóa chiến dịch', 'error'); }
             };
@@ -581,6 +715,8 @@ document.addEventListener('DOMContentLoaded', () => {
         inputTargetRequests.disabled = disabled;
         inputStartTime.disabled = disabled;
         inputEndTime.disabled = disabled;
+        if (inputMaxConcurrent) inputMaxConcurrent.disabled = disabled;
+        if (inputTimeoutMs) inputTimeoutMs.disabled = disabled;
         document.querySelectorAll('input[name="scheduleMode"]').forEach(r => r.disabled = disabled);
         document.querySelectorAll('input[name="executionMode"]').forEach(r => r.disabled = disabled);
         if (inputProxyEnabled) inputProxyEnabled.disabled = disabled;

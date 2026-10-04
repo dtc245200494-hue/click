@@ -10,8 +10,6 @@ binding = "ASSETS"
 [triggers]
 crons = ["* * * * *"]
 
-[vars]
-DEFAULT_BROWSERLESS_TOKEN = "2VNZv2Y037G6Qlv8f96550a30de21a58e84cc6be49fd388f2"
 
 [[kv_namespaces]]
 binding = "CAMPAIGNS_KV"
