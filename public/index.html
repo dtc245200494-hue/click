@@ -281,7 +281,7 @@
     <div class="toast-container" id="toastContainer"></div>
 
     <!-- Scripts -->
-    <script src="/socket.io/socket.io.js"></script>
+    <script src="/socket.io/socket.io.js" onerror="console.info('Chế độ Serverless / Cloudflare Worker: Socket.IO script không khả dụng, chuyển sang chế độ Live Polling.')"></script>
     <script src="js/timeDistribution.js?v=3.0"></script>
     <script src="js/app.js?v=3.0"></script>
 </body>

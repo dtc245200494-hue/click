@@ -5,7 +5,7 @@
 
 document.addEventListener('DOMContentLoaded', () => {
     // ─── Socket.IO & State ─────────────────────────────────────────────────────────
-    const socket = io();
+    const socket = (typeof io === 'function') ? io() : null;
     let campaigns = [];
     let selectedCampaignId = null;
     let autoScrollLogs = true;
@@ -84,31 +84,60 @@ document.addEventListener('DOMContentLoaded', () => {
         return `${y}-${m}-${d}T${hh}:${mm}`;
     }
 
-    // ─── Socket Events ────────────────────────────────────────────────────────────
-    socket.on('connect', () => {
+    // ─── Socket & Polling Events ─────────────────────────────────────────────────
+    if (socket) {
+        socket.on('connect', () => {
+            wsStatus.classList.remove('offline');
+            wsStatus.querySelector('.status-label').textContent = 'Kết nối Live';
+        });
+
+        socket.on('disconnect', () => {
+            wsStatus.classList.add('offline');
+            wsStatus.querySelector('.status-label').textContent = 'Mất kết nối';
+        });
+
+        socket.on('campaigns-list', (list) => {
+            campaigns = list || [];
+            renderCampaignsList();
+            updateGlobalMetrics();
+        });
+
+        socket.on('stats-update', (stats) => {
+            updateCampaignCardStats(stats);
+            updateGlobalMetrics();
+        });
+
+        socket.on('log', (logObj) => {
+            appendLogEntry(logObj);
+        });
+    } else {
+        // Cloudflare Worker / Serverless polling mode
         wsStatus.classList.remove('offline');
-        wsStatus.querySelector('.status-label').textContent = 'Kết nối Live';
-    });
+        wsStatus.querySelector('.status-label').textContent = 'Cloudflare Live Sync';
 
-    socket.on('disconnect', () => {
-        wsStatus.classList.add('offline');
-        wsStatus.querySelector('.status-label').textContent = 'Mất kết nối';
-    });
-
-    socket.on('campaigns-list', (list) => {
-        campaigns = list || [];
-        renderCampaignsList();
-        updateGlobalMetrics();
-    });
-
-    socket.on('stats-update', (stats) => {
-        updateCampaignCardStats(stats);
-        updateGlobalMetrics();
-    });
-
-    socket.on('log', (logObj) => {
-        appendLogEntry(logObj);
-    });
+        let lastSeenLogs = new Set();
+        setInterval(async () => {
+            await loadCampaigns(true);
+            campaigns.forEach(c => {
+                if (Array.isArray(c.recentLogs)) {
+                    c.recentLogs.forEach(entry => {
+                        const key = `${entry.timestamp}_${entry.text}`;
+                        if (!lastSeenLogs.has(key)) {
+                            lastSeenLogs.add(key);
+                            appendLogEntry({
+                                campaignId: c.id,
+                                campaignName: c.name,
+                                ...entry
+                            });
+                        }
+                    });
+                }
+            });
+            if (lastSeenLogs.size > 200) {
+                lastSeenLogs = new Set(Array.from(lastSeenLogs).slice(-100));
+            }
+        }, 2500);
+    }
 
     // ─── Fetch Campaigns on Load ──────────────────────────────────────────────────
     async function loadCampaigns() {
