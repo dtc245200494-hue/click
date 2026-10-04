@@ -347,6 +347,12 @@ body::before {
     border-color: var(--border-glass-light);
 }
 
+.btn svg, .btn-icon svg, .metric-icon svg, .health-chip svg {
+    flex-shrink: 0;
+    display: inline-block;
+    vertical-align: middle;
+}
+
 /* ─── System Health Bar: Apple Dynamic Island Pill ────────────────────────── */
 .system-health-bar {
     display: flex;

@@ -215,12 +215,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const statusClass = `status-${c.status}`;
             const statusLabels = {
-                running: '<i class="fa-solid fa-play"></i> Đang chạy',
-                waiting: '<i class="fa-solid fa-clock"></i> Chờ đến giờ',
-                paused: '<i class="fa-solid fa-pause"></i> Tạm dừng',
-                completed: '<i class="fa-solid fa-check"></i> Hoàn thành',
-                expired: '<i class="fa-solid fa-ban"></i> Hết giờ',
-                stopped: '<i class="fa-solid fa-stop"></i> Đã dừng'
+                running: '<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Đang chạy',
+                waiting: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Chờ đến giờ',
+                paused: '<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> Tạm dừng',
+                completed: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> Hoàn thành',
+                expired: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg> Hết giờ',
+                stopped: '<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16"/></svg> Đã dừng'
             };
 
             const percent = c.progressPercent || 0;
@@ -235,9 +235,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="campaign-name" title="${c.name}">${c.name}</span>
                         <span class="mode-badge ${c.scheduleMode}">${c.scheduleMode}</span>
                         <span class="mode-badge ${isBrowser ? 'browser' : 'http'}">
-                            ${isBrowser ? '<i class="fa-solid fa-globe"></i> Browser QA' : '<i class="fa-solid fa-bolt"></i> HTTP'}
+                            ${isBrowser
+                                ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> Browser QA'
+                                : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> HTTP'
+                            }
                         </span>
-                        ${hasStarted ? '<span class="badge-locked" title="Chiến dịch đã chạy - Các thông số cốt lõi đã bị khóa an toàn"><i class="fa-solid fa-lock"></i> Locked</span>' : ''}
+                        ${hasStarted ? '<span class="badge-locked" title="Chiến dịch đã chạy - Các thông số cốt lõi đã bị khóa an toàn"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Locked</span>' : ''}
                     </div>
                     <span class="status-tag ${statusClass}" id="status-tag-${c.id}">
                         ${statusLabels[c.status] || c.status}
@@ -245,13 +248,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
 
                 <div class="campaign-url-row">
-                    <i class="fa-solid fa-link"></i>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                     <span>${c.targetUrl}</span>
                 </div>
 
                 ${proxyEnabled ? `
                 <div class="campaign-proxy-row">
-                    <i class="fa-solid fa-shuffle"></i>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
                     <span>Proxy: <strong>${c.lastGateway ? c.lastGateway.replace(/:\/\/[^@]*@/, '://***@') : (c.proxyConfig.currentGateway ? c.proxyConfig.currentGateway.replace(/:\/\/[^@]*@/, '://***@') : 'Đang khởi tạo...')}</strong></span>
                     <span style="opacity: 0.7; font-size: 11px;">(Xoay mỗi ${c.proxyConfig.rotationIntervalSec || 300}s)</span>
                 </div>
@@ -270,23 +273,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 <!-- Live Subrequest Telemetry Box -->
                 <div class="campaign-telemetry-box">
                     <div class="telemetry-item">
-                        <span class="t-label"><i class="fa-solid fa-paper-plane"></i> Tổng ${isBrowser ? 'Browser Runs' : 'HTTP'}:</span>
+                        <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Tổng ${isBrowser ? 'Browser Runs' : 'HTTP'}:</span>
                         <b class="t-val val-dispatched" id="stat-disp-${c.id}">${c.totalDispatched || 0}</b>
                     </div>
                     <div class="telemetry-item">
-                        <span class="t-label"><i class="fa-solid fa-circle-check"></i> Thành công:</span>
+                        <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg> Thành công:</span>
                         <b class="t-val val-success" id="stat-succ-${c.id}">${c.successRequests || 0}</b>
                     </div>
                     <div class="telemetry-item">
-                        <span class="t-label"><i class="fa-solid fa-circle-xmark"></i> Thất bại:</span>
+                        <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg> Thất bại:</span>
                         <b class="t-val val-failed" id="stat-fail-${c.id}">${c.failedRequests || 0}</b>
                     </div>
                     <div class="telemetry-item">
-                        <span class="t-label"><i class="fa-solid fa-clock-rotate-left"></i> Lần chạy cuối:</span>
+                        <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Lần chạy cuối:</span>
                         <b class="t-val" id="stat-cron-${c.id}">${c.lastAlarmRunText || c.lastCronRunText || 'Chờ đợt tới...'}</b>
                     </div>
                     <div class="telemetry-item span-full">
-                        <span class="t-label"><i class="fa-solid fa-bolt"></i> Kết quả cuối:</span>
+                        <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Kết quả cuối:</span>
                         <b class="t-val ${c.lastStatusCode && c.lastStatusCode >= 400 ? 'val-failed' : 'val-success'}" id="stat-req-${c.id}">
                             ${c.lastRequestText ? `${c.lastRequestText} (HTTP ${c.lastStatusCode || '--'} • ${c.lastLatencyMs || '--'}ms)` : 'Chưa gửi'}
                         </b>
@@ -294,7 +297,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                     ${(isBrowser && c.lastPageTitle) ? `
                     <div class="telemetry-item span-full item-page-title">
-                        <span class="t-label"><i class="fa-solid fa-window-maximize"></i> DOM Page Title:</span>
+                        <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> DOM Page Title:</span>
                         <b class="t-val" style="word-break: break-all; font-weight: 500;">"${escapeHtml(c.lastPageTitle)}"</b>
                     </div>
                     ` : ''}
@@ -321,13 +324,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 <div class="campaign-actions-row">
                     ${c.status === 'running'
-                        ? `<button class="btn btn-sm btn-warning btn-pause" data-id="${c.id}"><i class="fa-solid fa-pause"></i> Tạm dừng</button>`
-                        : `<button class="btn btn-sm btn-success btn-start" data-id="${c.id}"><i class="fa-solid fa-play"></i> Bắt đầu</button>`
+                        ? `<button class="btn btn-sm btn-warning btn-pause" data-id="${c.id}"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> Tạm dừng</button>`
+                        : `<button class="btn btn-sm btn-success btn-start" data-id="${c.id}"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Bắt đầu</button>`
                     }
-                    <button class="btn btn-sm btn-secondary btn-reset" data-id="${c.id}" title="Reset số liệu về 0 & Mở khóa cấu hình"><i class="fa-solid fa-rotate-left"></i> Reset</button>
-                    <button class="btn btn-sm btn-secondary btn-chart" data-id="${c.id}"><i class="fa-solid fa-chart-simple"></i> Biểu đồ</button>
-                    <button class="btn btn-sm btn-secondary btn-edit" data-id="${c.id}"><i class="fa-solid fa-pen"></i> Sửa</button>
-                    <button class="btn btn-sm btn-danger btn-delete" data-id="${c.id}"><i class="fa-solid fa-trash"></i> Xóa</button>
+                    <button class="btn btn-sm btn-secondary btn-reset" data-id="${c.id}" title="Reset số liệu về 0 & Mở khóa cấu hình"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg> Reset</button>
+                    <button class="btn btn-sm btn-secondary btn-chart" data-id="${c.id}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Biểu đồ</button>
+                    <button class="btn btn-sm btn-secondary btn-edit" data-id="${c.id}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> Sửa</button>
+                    <button class="btn btn-sm btn-danger btn-delete" data-id="${c.id}"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> Xóa</button>
                 </div>
             `;
 
