@@ -1,19 +1,10 @@
 {
-    "name": null,
+    "name": "Chiến dịch Benchmark 1",
     "targetUrl": "https://uanbidvak.com",
-    "targetClicks": 900,
+    "targetRequests": 900,
     "startTime": 1790212260000,
     "endTime": 1790262000000,
-    "startTimeStr": "2026-09-24T08:11",
-    "endTimeStr": "2026-09-24T22:00",
-    "scheduleMode": "even",
-    "customBlocks": null,
-    "cleanMode": "incognito",
-    "browserMode": "request",
-    "cooldownSec": 2,
-    "dwellMin": 2,
-    "dwellMax": 5,
-    "humanActions": true,
-    "randomLinks": true,
-    "dedupIp": false
+    "scheduleMode": "smart",
+    "timeoutMs": 8000,
+    "maxConcurrent": 3
 }

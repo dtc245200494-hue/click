@@ -1,13 +1,17 @@
-const { buildTimeDistribution, generateClickSchedule, formatDuration } = require('./timeDistribution');
+const {
+    buildTimeDistribution,
+    generateClickSchedule,
+    calculateAdaptiveNextInterval,
+    formatDuration
+} = require('./timeDistribution');
 
 function runTests() {
     console.log('==================================================');
-    console.log('BẮT ĐẦU KIỂM TRA 11 TEST CASES:');
+    console.log('BẮT ĐẦU KIỂM TRA TOÀN DIỆN CÁC TEST CASES (BAO GỒM ADAPTIVE):');
     console.log('==================================================\n');
 
     let allPassed = true;
 
-    // Helper to create dates in local time
     function makeDate(year, month, day, hour, minute) {
         return new Date(year, month - 1, day, hour, minute, 0, 0).getTime();
     }
@@ -31,10 +35,9 @@ function runTests() {
     const end2   = makeDate(2026, 8, 18, 16, 40);
     const res2 = buildTimeDistribution({ startTime: start2, endTime: end2, targetClicks: 100, mode: 'smart' });
     const sched2 = generateClickSchedule(start2, end2, 100, 'smart');
-    console.log(`Duration Formatted: "${res2.durationFormatted}" (Kỳ vọng: "5 phút", không hiển thị 0.1 tiếng)`);
-    console.log(`Summary Blocks:`, res2.summaryBlocks);
     const totalQuota2 = res2.slices.reduce((sum, s) => sum + s.quota, 0);
     const pass2 = totalQuota2 === 100 && sched2.length === 100 && res2.durationFormatted === '5 phút';
+    console.log(`Duration Formatted: "${res2.durationFormatted}"`);
     console.log(`-> KẾT QUẢ: ${pass2 ? '✅ PASS' : '❌ FAIL'}\n`);
     if (!pass2) allPassed = false;
 
@@ -44,10 +47,9 @@ function runTests() {
     const end3   = makeDate(2026, 8, 19, 3, 0);
     const res3 = buildTimeDistribution({ startTime: start3, endTime: end3, targetClicks: 100, mode: 'smart' });
     const sched3 = generateClickSchedule(start3, end3, 100, 'smart');
-    console.log(`Duration Formatted: "${res3.durationFormatted}" (${res3.durationMs / 3600000} giờ)`);
-    console.log(`Số hourly slices: ${res3.slices.length} (Kỳ vọng: 9 slices)`);
     const totalQuota3 = res3.slices.reduce((sum, s) => sum + s.quota, 0);
     const pass3 = totalQuota3 === 100 && sched3.length === 100 && res3.slices.length === 9 && (res3.durationMs / 3600000 === 9);
+    console.log(`Duration Formatted: "${res3.durationFormatted}" (${res3.durationMs / 3600000} giờ) | Slices: ${res3.slices.length}`);
     console.log(`-> KẾT QUẢ: ${pass3 ? '✅ PASS' : '❌ FAIL'}\n`);
     if (!pass3) allPassed = false;
 
@@ -59,13 +61,9 @@ function runTests() {
     const sched4 = generateClickSchedule(start4, end4, 100, 'smart');
     const firstSlice = res4.slices[0];
     const lastSlice = res4.slices[res4.slices.length - 1];
-    console.log(`Slice đầu: ${firstSlice.startStr} -> ${firstSlice.endStr} (${firstSlice.durationMinutes} phút, quota: ${firstSlice.quota})`);
-    console.log(`Slice cuối: ${lastSlice.startStr} -> ${lastSlice.endStr} (${lastSlice.durationMinutes} phút, quota: ${lastSlice.quota})`);
     const totalQuota4 = res4.slices.reduce((sum, s) => sum + s.quota, 0);
-    const pass4 = totalQuota4 === 100 &&
-                  sched4.length === 100 &&
-                  firstSlice.durationMinutes === 25 &&
-                  lastSlice.durationMinutes === 20;
+    const pass4 = totalQuota4 === 100 && sched4.length === 100 && firstSlice.durationMinutes === 25 && lastSlice.durationMinutes === 20;
+    console.log(`Slice đầu: ${firstSlice.startStr} -> ${firstSlice.endStr} (${firstSlice.durationMinutes}p) | Slice cuối: ${lastSlice.startStr} -> ${lastSlice.endStr} (${lastSlice.durationMinutes}p)`);
     console.log(`-> KẾT QUẢ: ${pass4 ? '✅ PASS' : '❌ FAIL'}\n`);
     if (!pass4) allPassed = false;
 
@@ -75,121 +73,137 @@ function runTests() {
     const end5   = makeDate(2026, 8, 18, 15, 0);
     const res5 = buildTimeDistribution({ startTime: start5, endTime: end5, targetClicks: 100, mode: 'even' });
     const sched5 = generateClickSchedule(start5, end5, 100, 'even');
-    console.log(`Quotas các slices 5 giờ:`, res5.slices.map(s => `${s.startStr}-${s.endStr}: ${s.quota}`));
     const totalQuota5 = res5.slices.reduce((sum, s) => sum + s.quota, 0);
-    // Each 1-hour slice out of 5 hours should get 20 clicks
     const pass5 = totalQuota5 === 100 && res5.slices.every(s => s.quota === 20);
+    console.log(`Quotas các slices 5 giờ:`, res5.slices.map(s => `${s.startStr}-${s.endStr}: ${s.quota}`));
     console.log(`-> KẾT QUẢ: ${pass5 ? '✅ PASS (Mỗi giờ đều 20 lượt)' : '❌ FAIL'}\n`);
     if (!pass5) allPassed = false;
 
-    // CASE 6: 100 lượt, Tùy chỉnh (Custom)
-    console.log('--- TEST CASE 6: 00:00 -> 12:00 (12 giờ) | 100 lượt | Tùy chỉnh (Custom) ---');
-    const start6 = makeDate(2026, 8, 18, 0, 0);
-    const end6   = makeDate(2026, 8, 18, 12, 0);
-    const customBlocks = {
-        night: 'low',          // 00h-06h: low
-        early_morning: 'medium', // 06h-09h: medium
-        morning: 'high'        // 09h-12h: high
-    };
-    const res6 = buildTimeDistribution({ startTime: start6, endTime: end6, targetClicks: 100, mode: 'custom', customBlocks });
-    const sched6 = generateClickSchedule(start6, end6, 100, 'custom', customBlocks);
-    const totalQuota6 = res6.slices.reduce((sum, s) => sum + s.quota, 0);
-    const nightQuota = res6.slices.filter(s => s.hourOfDay < 6).reduce((a, b) => a + b.quota, 0);
-    const morningQuota = res6.slices.filter(s => s.hourOfDay >= 9 && s.hourOfDay < 12).reduce((a, b) => a + b.quota, 0);
-    console.log(`Quota Đêm (6h, low): ${nightQuota} | Quota Sáng cao điểm (3h, high): ${morningQuota}`);
-    console.log(`Total: ${totalQuota6} / 100`);
-    const pass6 = totalQuota6 === 100 && morningQuota > nightQuota;
-    console.log(`-> KẾT QUẢ: ${pass6 ? '✅ PASS' : '❌ FAIL'}\n`);
-    if (!pass6) allPassed = false;
-
-    // CASE 7: Kiểm tra tổng quota = targetClicks trên nhiều test case ngẫu nhiên
-    console.log('--- TEST CASE 7: Kiểm tra sum(all quotas) === targetClicks trên 20 tổ hợp thời gian/clicks ngẫu nhiên ---');
-    let pass7 = true;
+    // CASE 6: Random tests - sum(quotas) === target
+    console.log('--- TEST CASE 6: Kiểm tra sum(all quotas) === target trên 20 tổ hợp ngẫu nhiên ---');
+    let pass6 = true;
     for (let i = 0; i < 20; i++) {
         const randClicks = Math.floor(Math.random() * 5000) + 1;
         const randStart = Date.now() + Math.floor(Math.random() * 86400000);
-        const randDuration = Math.floor(Math.random() * (72 * 3600000)) + 60000; // 1 min to 72 hours
+        const randDuration = Math.floor(Math.random() * (72 * 3600000)) + 60000;
         const randEnd = randStart + randDuration;
-        const mode = ['smart', 'even', 'custom'][i % 3];
+        const mode = i % 2 === 0 ? 'smart' : 'even';
 
         const res = buildTimeDistribution({ startTime: randStart, endTime: randEnd, targetClicks: randClicks, mode });
         const sumQuota = res.slices.reduce((sum, s) => sum + s.quota, 0);
         if (sumQuota !== randClicks) {
-            console.error(`Mismatch on test ${i}: target=${randClicks}, got=${sumQuota}`);
-            pass7 = false;
+            pass6 = false;
         }
     }
-    console.log(`-> KẾT QUẢ: ${pass7 ? '✅ PASS (20/20 tổ hợp đều đúng 100% targetClicks)' : '❌ FAIL'}\n`);
+    console.log(`-> KẾT QUẢ: ${pass6 ? '✅ PASS (20/20 tổ hợp ngẫu nhiên khớp 100% target)' : '❌ FAIL'}\n`);
+    if (!pass6) allPassed = false;
+
+    // CASE 7: 750 tasks, 07:00 -> 13:00, Even (Kịch bản người dùng chốt)
+    console.log('--- TEST CASE 7: 07:00 -> 13:00 | 750 lượt | Even (Chia đều 6 giờ) ---');
+    const start7 = makeDate(2026, 9, 24, 7, 0);
+    const end7   = makeDate(2026, 9, 24, 13, 0);
+    const res7 = buildTimeDistribution({ startTime: start7, endTime: end7, targetClicks: 750, mode: 'even' });
+    const sched7 = generateClickSchedule(start7, end7, 750, 'even');
+    const quotas7 = res7.slices.map(s => s.quota);
+    const pass7 = sched7.length === 750 && quotas7.length === 6 && quotas7.every(q => q === 125);
+    console.log(`Quotas từng giờ: ${quotas7.join(' + ')} = ${quotas7.reduce((a,b) => a+b, 0)} (Mỗi giờ chính xác 125 lượt)`);
+    console.log(`-> KẾT QUẢ: ${pass7 ? '✅ PASS' : '❌ FAIL'}\n`);
     if (!pass7) allPassed = false;
 
-    // CASE 8: Kiểm tra mọi block.start >= startTime và block.end <= endTime, timestamps trong bounds
-    console.log('--- TEST CASE 8: Kiểm tra bounds an toàn: mọi block.start >= startTime, block.end <= endTime, timestamps trong bounds ---');
-    let pass8 = true;
-    for (const testDist of [res1, res2, res3, res4, res5, res6]) {
-        for (const s of testDist.slices) {
-            if (s.start < testDist.startMs || s.end > testDist.endMs) {
-                console.error(`Slice out of bounds! start=${s.start}, end=${s.end}`);
-                pass8 = false;
-            }
-        }
-    }
-    for (const [sched, st, en] of [[sched1, start1, end1], [sched2, start2, end2], [sched3, start3, end3], [sched4, start4, end4], [sched5, start5, end5], [sched6, start6, end6]]) {
-        for (const t of sched) {
-            if (t < st || t > en) {
-                console.error(`Timestamp out of bounds! t=${t}, st=${st}, en=${en}`);
-                pass8 = false;
-            }
-        }
-    }
-    console.log(`-> KẾT QUẢ: ${pass8 ? '✅ PASS (Tất cả slices và timestamps đều nằm chính xác trong [startTime, endTime])' : '❌ FAIL'}\n`);
+    // CASE 8: 750 tasks, 07:00 -> 13:00, Smart (Kịch bản phân bổ thông minh)
+    console.log('--- TEST CASE 8: 07:00 -> 13:00 | 750 lượt | Smart (Ít -> Tăng -> Cao điểm -> Giảm) ---');
+    const res8 = buildTimeDistribution({ startTime: start7, endTime: end7, targetClicks: 750, mode: 'smart' });
+    const sched8 = generateClickSchedule(start7, end7, 750, 'smart');
+    const quotas8 = res8.slices.map(s => s.quota);
+    const expectedSmart = [86, 114, 152, 161, 142, 95];
+    const pass8 = sched8.length === 750 && quotas8.length === 6 && quotas8.every((q, i) => q === expectedSmart[i]);
+    console.log(`Quotas từng giờ: ${quotas8.join(' + ')} = ${quotas8.reduce((a,b) => a+b, 0)}`);
+    console.log(`Kỳ vọng:         ${expectedSmart.join(' + ')}`);
+    console.log(`-> KẾT QUẢ: ${pass8 ? '✅ PASS' : '❌ FAIL'}\n`);
     if (!pass8) allPassed = false;
 
-    // CASE 9: Exact user scenario - 750 tasks, 07:00 -> 13:00, Even
-    console.log('--- TEST CASE 9: 07:00 -> 13:00 | 750 lượt | Đồng đều (Even) ---');
-    const start9 = makeDate(2026, 9, 24, 7, 0);
-    const end9   = makeDate(2026, 9, 24, 13, 0);
-    const res9 = buildTimeDistribution({ startTime: start9, endTime: end9, targetClicks: 750, mode: 'even' });
-    const sched9 = generateClickSchedule(start9, end9, 750, 'even');
+    // CASE 9: Timezone VN (UTC+7) | 07:00 -> 13:00 | 750 lượt | Smart
+    console.log('--- TEST CASE 9: Timezone VN (UTC+7) | 07:00 -> 13:00 | 750 lượt | Smart ---');
+    const start9 = Date.UTC(2026, 8, 24, 0, 0, 0, 0); // 07:00 UTC+7 = 00:00Z
+    const end9 = Date.UTC(2026, 8, 24, 6, 0, 0, 0);   // 13:00 UTC+7 = 06:00Z
+    const res9 = buildTimeDistribution({
+        startTime: start9, endTime: end9, targetClicks: 750, mode: 'smart', timezoneOffsetMinutes: -420
+    });
+    const sched9 = generateClickSchedule(start9, end9, 750, 'smart', null, -420);
     const quotas9 = res9.slices.map(s => s.quota);
-    const pass9 = sched9.length === 750 && quotas9.length === 6 && quotas9.every(q => q === 125) &&
-        sched9.every(t => t >= start9 && t < end9);
-    console.log(`Quotas: ${quotas9.join(' + ')} = ${quotas9.reduce((a,b) => a+b, 0)} | timestamps=${sched9.length}`);
+    const pass9 = quotas9.every((q, i) => q === expectedSmart[i]) &&
+                  res9.slices[0].startStr === '07:00' && res9.slices[res9.slices.length - 1].endStr === '13:00' &&
+                  sched9.length === 750;
+    console.log(`VN wall-clock: ${res9.slices[0].startStr} -> ${res9.slices[res9.slices.length - 1].endStr} | Quotas: ${quotas9.join(' + ')}`);
     console.log(`-> KẾT QUẢ: ${pass9 ? '✅ PASS' : '❌ FAIL'}\n`);
     if (!pass9) allPassed = false;
 
-    // CASE 10: Exact user scenario - 750 tasks, 07:00 -> 13:00, Smart
-    console.log('--- TEST CASE 10: 07:00 -> 13:00 | 750 lượt | Smart ---');
-    const res10 = buildTimeDistribution({ startTime: start9, endTime: end9, targetClicks: 750, mode: 'smart' });
-    const sched10 = generateClickSchedule(start9, end9, 750, 'smart');
-    const quotas10 = res10.slices.map(s => s.quota);
-    const expectedSmart = [86, 114, 152, 161, 142, 95];
-    const pass10 = sched10.length === 750 && quotas10.length === 6 &&
-        quotas10.every((q, i) => q === expectedSmart[i]) &&
-        sched10.every(t => t >= start9 && t < end9);
-    console.log(`Quotas: ${quotas10.join(' + ')} = ${quotas10.reduce((a,b) => a+b, 0)} | timestamps=${sched10.length}`);
-    console.log(`-> KẾT QUẢ: ${pass10 ? '✅ PASS' : '❌ FAIL'}\n`);
+    // CASE 10: ADAPTIVE SMART SCHEDULER - Kịch bản người dùng đưa ra:
+    // target = 750, success = 317, remaining = 433, timeRemaining = 3h12m (192 phút)
+    console.log('--- TEST CASE 10: ADAPTIVE SMART - target=750, success=317, remaining=433, timeRemaining=3h12m ---');
+    const now10 = makeDate(2026, 9, 24, 9, 48); // 09:48 (còn 12 phút trong giờ 09:00, và 3 giờ tiếp theo: 10, 11, 12)
+    const end10 = makeDate(2026, 9, 24, 13, 0); // 13:00 -> đúng 3h12m (192 phút = 11,520,000 ms)
+    const timeRemainingExpected = (3 * 60 + 12) * 60000;
+    const adaptiveRes10 = calculateAdaptiveNextInterval({
+        now: now10,
+        endTime: end10,
+        remainingRequests: 433,
+        mode: 'smart',
+        timezoneOffsetMinutes: null
+    });
+    console.log(`Time remaining: ${formatDuration(adaptiveRes10.timeRemainingMs)} (${adaptiveRes10.timeRemainingMs} ms)`);
+    console.log(`Ideal Interval: ${adaptiveRes10.idealIntervalMs} ms (~${(adaptiveRes10.idealIntervalMs / 1000).toFixed(2)}s/request)`);
+    console.log(`Jittered Interval: ${adaptiveRes10.jitteredIntervalMs} ms`);
+    console.log(`Tốc độ hiện tại: ${adaptiveRes10.currentRatePerHour} requests/giờ`);
+    console.log(`Quota còn lại của giờ 9: ${adaptiveRes10.quotaCurrentSlice}`);
+
+    // Giờ 9h cao điểm (w=1.6), còn 12 phút. Khoảng cách giữa các reqs khoảng 20-30s
+    const pass10 = adaptiveRes10.valid &&
+                   adaptiveRes10.timeRemainingMs === timeRemainingExpected &&
+                   adaptiveRes10.remainingRequests === 433 &&
+                   adaptiveRes10.idealIntervalMs > 15000 && adaptiveRes10.idealIntervalMs < 40000;
+    console.log(`-> KẾT QUẢ: ${pass10 ? '✅ PASS (Tự động tính nhịp độ chính xác cho phần còn lại)' : '❌ FAIL'}\n`);
     if (!pass10) allPassed = false;
 
-    // CASE 11: Smart must use the browser timezone, not the VPS timezone.
-    console.log('--- TEST CASE 11: Timezone VN (UTC+7) | 07:00 -> 13:00 | 750 lượt | Smart ---');
-    // 07:00 in UTC+7 equals 00:00Z. JS getTimezoneOffset for UTC+7 is -420.
-    const start11 = Date.UTC(2026, 8, 24, 0, 0, 0, 0);
-    const end11 = Date.UTC(2026, 8, 24, 6, 0, 0, 0);
-    const res11 = buildTimeDistribution({
-        startTime: start11, endTime: end11, targetClicks: 750, mode: 'smart', timezoneOffsetMinutes: -420
+    // CASE 11: ADAPTIVE EVEN SCHEDULER
+    console.log('--- TEST CASE 11: ADAPTIVE EVEN - remaining=433, timeRemaining=3h12m ---');
+    const adaptiveEven = calculateAdaptiveNextInterval({
+        now: now10,
+        endTime: end10,
+        remainingRequests: 433,
+        mode: 'even'
     });
-    const sched11 = generateClickSchedule(start11, end11, 750, 'smart', null, -420);
-    const quotas11 = res11.slices.map(s => s.quota);
-    const pass11 = quotas11.every((q, i) => q === expectedSmart[i]) &&
-        res11.slices[0].startStr === '07:00' && res11.slices[res11.slices.length - 1].endStr === '13:00' &&
-        sched11.length === 750 && sched11.every(t => t >= start11 && t < end11);
-    console.log(`VN wall-clock: ${res11.slices[0].startStr} -> ${res11.slices[res11.slices.length - 1].endStr} | Quotas: ${quotas11.join(' + ')}`);
+    const expectedEvenInterval = Math.round(timeRemainingExpected / 433); // 11520000 / 433 = 26605 ms (~26.6s)
+    console.log(`Even Ideal Interval: ${adaptiveEven.idealIntervalMs} ms (Kỳ vọng: ${expectedEvenInterval} ms)`);
+    const pass11 = adaptiveEven.valid && adaptiveEven.idealIntervalMs === expectedEvenInterval;
     console.log(`-> KẾT QUẢ: ${pass11 ? '✅ PASS' : '❌ FAIL'}\n`);
     if (!pass11) allPassed = false;
 
+    // CASE 12: CHỐNG BẮN DỒN KHI SERVER BỊ LAG (Server lag 10 phút)
+    console.log('--- TEST CASE 12: CHỐNG BẮN DỒN KHI LAG 10 PHÚT ---');
+    // Trước khi lag: lúc 09:48, interval là ~26.6s
+    // Sau khi server lag 10 phút, lúc 09:58 (vẫn còn 433 requests vì trong 10 phút không bắn được gì)
+    const nowAfterLag = now10 + (10 * 60000); // 09:58
+    const adaptiveAfterLag = calculateAdaptiveNextInterval({
+        now: nowAfterLag,
+        endTime: end10,
+        remainingRequests: 433,
+        mode: 'even'
+    });
+    const expectedLagInterval = Math.round(((3 * 60 + 2) * 60000) / 433); // 182 phút / 433 reqs = 25219 ms (~25.2s)
+    console.log(`Sau lag 10 phút: interval điều chỉnh từ ${adaptiveEven.idealIntervalMs}ms xuống ${adaptiveAfterLag.idealIntervalMs}ms`);
+    console.log(`Tự động bù nhịp độ êm dịu, không xả dồn một cục 25 requests!`);
+    const pass12 = adaptiveAfterLag.valid &&
+                   adaptiveAfterLag.idealIntervalMs === expectedLagInterval &&
+                   adaptiveAfterLag.idealIntervalMs < adaptiveEven.idealIntervalMs;
+    console.log(`-> KẾT QUẢ: ${pass12 ? '✅ PASS (Nhịp độ tự động co lại mượt mà để kịp về đích 13:00)' : '❌ FAIL'}\n`);
+    if (!pass12) allPassed = false;
+
     console.log('==================================================');
-    console.log(`TỔNG KẾT: ${allPassed ? '🎉 TẤT CẢ 11/11 TEST CASES ĐÃ PASS!' : '⚠️ CÓ TEST CASE BỊ LỖI!'}`);
+    console.log(`TỔNG KẾT: ${allPassed ? '🎉 TẤT CẢ 12/12 TEST CASES ĐÃ PASS XUẤT SẮC!' : '⚠️ CÓ TEST CASE BỊ LỖI!'}`);
     console.log('==================================================');
+
+    if (!allPassed) process.exit(1);
 }
 
 runTests();

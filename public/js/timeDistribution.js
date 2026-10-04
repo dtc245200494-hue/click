@@ -1,7 +1,10 @@
 /**
- * public/js/timeDistribution.js
- * Core module for Smart Hourly, Even, and Custom Traffic Distribution
- * Shared logic between Backend Scheduler & Frontend Preview
+ * timeDistribution.js
+ * Core engine for Smart Hourly & Even Traffic Distribution
+ * Features:
+ *  - Real-time Adaptive Dynamic Pacing (auto-adjusts on server lag/delays)
+ *  - Proportional Hare-Niemeyer Quota Allocation for UI charts & preview
+ *  - Timezone-aware slice calculations (browser/local timezone)
  */
 
 const SMART_HOURLY_WEIGHTS = {
@@ -21,49 +24,18 @@ const SMART_HOURLY_WEIGHTS = {
     22: 1.00, 23: 0.60
 };
 
-const CUSTOM_LEVEL_WEIGHTS = {
-    'low': 0.30,
-    'medium': 1.00,
-    'high': 1.80
-};
-
 const TIME_BLOCK_DEFINITIONS = [
-    { id: 'night', label: '🌙 Đêm (00h-06h)', hours: [0, 1, 2, 3, 4, 5], color: '#64748b', defaultLevel: 'low' },
-    { id: 'early', label: '🌅 Sáng sớm (06h-09h)', hours: [6, 7, 8], color: '#f59e0b', defaultLevel: 'medium' },
-    { id: 'morn',  label: '💼 Sáng cao điểm (09h-12h)', hours: [9, 10, 11], color: '#22c55e', defaultLevel: 'high' },
-    { id: 'noon',  label: '🍱 Trưa (12h-14h)', hours: [12, 13], color: '#38bdf8', defaultLevel: 'medium' },
-    { id: 'after', label: '📈 Chiều cao điểm (14h-18h)', hours: [14, 15, 16, 17], color: '#818cf8', defaultLevel: 'high' },
-    { id: 'eve',   label: '📱 Tối cao điểm (18h-22h)', hours: [18, 19, 20, 21], color: '#ec4899', defaultLevel: 'high' },
-    { id: 'late',  label: '🌜 Khuya (22h-00h)', hours: [22, 23], color: '#a855f7', defaultLevel: 'medium' }
+    { id: 'night', label: '🌙 Đêm (00h-06h)', hours: [0, 1, 2, 3, 4, 5], color: '#64748b' },
+    { id: 'early', label: '🌅 Sáng sớm (06h-09h)', hours: [6, 7, 8], color: '#f59e0b' },
+    { id: 'morn',  label: '💼 Sáng cao điểm (09h-12h)', hours: [9, 10, 11], color: '#22c55e' },
+    { id: 'noon',  label: '🍱 Trưa (12h-14h)', hours: [12, 13], color: '#38bdf8' },
+    { id: 'after', label: '📈 Chiều cao điểm (14h-18h)', hours: [14, 15, 16, 17], color: '#818cf8' },
+    { id: 'eve',   label: '📱 Tối cao điểm (18h-22h)', hours: [18, 19, 20, 21], color: '#ec4899' },
+    { id: 'late',  label: '🌜 Khuya (22h-00h)', hours: [22, 23], color: '#a855f7' }
 ];
 
-function buildHourlyWeightsFromCustomBlocks(blocks) {
-    if (!blocks) return SMART_HOURLY_WEIGHTS;
-    const weights = {};
-    const getVal = (blockName, def) => CUSTOM_LEVEL_WEIGHTS[blocks[blockName]] || def;
-
-    const wNight = getVal('night', 0.25);
-    for (let h = 0; h < 6; h++) weights[h] = wNight;
-
-    const wEarly = getVal('early_morning', 0.9);
-    for (let h = 6; h < 9; h++) weights[h] = wEarly;
-
-    const wMorn = getVal('morning', 1.6);
-    for (let h = 9; h < 12; h++) weights[h] = wMorn;
-
-    const wNoon = getVal('noon', 1.0);
-    for (let h = 12; h < 14; h++) weights[h] = wNoon;
-
-    const wAfter = getVal('afternoon', 1.7);
-    for (let h = 14; h < 18; h++) weights[h] = wAfter;
-
-    const wEve = getVal('evening', 1.5);
-    for (let h = 18; h < 22; h++) weights[h] = wEve;
-
-    const wLate = getVal('late_night', 0.6);
-    for (let h = 22; h < 24; h++) weights[h] = wLate;
-
-    return weights;
+function hasTimezoneOffset(tz) {
+    return tz !== null && tz !== undefined && tz !== '' && Number.isFinite(Number(tz));
 }
 
 function formatDuration(durationMs) {
@@ -93,18 +65,17 @@ function formatDuration(durationMs) {
 }
 
 function toOffsetDate(ms, timezoneOffsetMinutes = null) {
-    if (!Number.isFinite(Number(timezoneOffsetMinutes))) return new Date(ms);
-    // JS getTimezoneOffset convention: UTC - local time. Bangkok is -420.
+    if (!hasTimezoneOffset(timezoneOffsetMinutes)) return new Date(ms);
     return new Date(ms - Number(timezoneOffsetMinutes) * 60000);
 }
 
 function getHourForTimezone(ms, timezoneOffsetMinutes = null) {
     const d = toOffsetDate(ms, timezoneOffsetMinutes);
-    return Number.isFinite(Number(timezoneOffsetMinutes)) ? d.getUTCHours() : d.getHours();
+    return hasTimezoneOffset(timezoneOffsetMinutes) ? d.getUTCHours() : d.getHours();
 }
 
 function nextHourForTimezone(ms, timezoneOffsetMinutes = null) {
-    if (!Number.isFinite(Number(timezoneOffsetMinutes))) {
+    if (!hasTimezoneOffset(timezoneOffsetMinutes)) {
         const d = new Date(ms);
         d.setMinutes(0, 0, 0);
         d.setHours(d.getHours() + 1);
@@ -122,25 +93,25 @@ function nextHourForTimezone(ms, timezoneOffsetMinutes = null) {
 function formatTimeOnly(dateOrMs, timezoneOffsetMinutes = null) {
     const ms = dateOrMs instanceof Date ? dateOrMs.getTime() : Number(dateOrMs);
     const d = toOffsetDate(ms, timezoneOffsetMinutes);
-    const hh = String(Number.isFinite(Number(timezoneOffsetMinutes)) ? d.getUTCHours() : d.getHours()).padStart(2, '0');
-    const mm = String(Number.isFinite(Number(timezoneOffsetMinutes)) ? d.getUTCMinutes() : d.getMinutes()).padStart(2, '0');
+    const hh = String(hasTimezoneOffset(timezoneOffsetMinutes) ? d.getUTCHours() : d.getHours()).padStart(2, '0');
+    const mm = String(hasTimezoneOffset(timezoneOffsetMinutes) ? d.getUTCMinutes() : d.getMinutes()).padStart(2, '0');
     return `${hh}:${mm}`;
 }
 
 /**
- * Builds an exact, sliced time distribution model
+ * Builds an exact, sliced time distribution model for visualization & initial quotas
  */
-function buildTimeDistribution({ startTime, endTime, targetClicks, mode = 'smart', customBlocks = null, timezoneOffsetMinutes = null }) {
+function buildTimeDistribution({ startTime, endTime, targetClicks, mode = 'smart', timezoneOffsetMinutes = null }) {
     const startMs = typeof startTime === 'number' ? startTime : new Date(startTime).getTime();
     const endMs = typeof endTime === 'number' ? endTime : new Date(endTime).getTime();
-    const clicks = parseInt(targetClicks, 10) || 0;
+    const requests = parseInt(targetClicks, 10) || 0;
 
-    if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs || clicks <= 0) {
+    if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs || requests <= 0) {
         return {
             valid: false,
             startMs,
             endMs,
-            targetClicks: clicks,
+            targetClicks: requests,
             durationMs: 0,
             durationFormatted: '0 phút',
             slices: [],
@@ -151,15 +122,13 @@ function buildTimeDistribution({ startTime, endTime, targetClicks, mode = 'smart
 
     const durationMs = endMs - startMs;
     const durationFormatted = formatDuration(durationMs);
-    const avgIntervalSec = Number((durationMs / 1000 / clicks).toFixed(1));
+    const avgIntervalSec = Number((durationMs / 1000 / requests).toFixed(1));
 
     // Choose weights map
     let hourlyWeightMap = SMART_HOURLY_WEIGHTS;
     if (mode === 'even') {
         hourlyWeightMap = {};
         for (let h = 0; h < 24; h++) hourlyWeightMap[h] = 1.0;
-    } else if (mode === 'custom') {
-        hourlyWeightMap = buildHourlyWeightsFromCustomBlocks(customBlocks);
     }
 
     // 1. Break into exact real-time hourly slices
@@ -193,7 +162,7 @@ function buildTimeDistribution({ startTime, endTime, targetClicks, mode = 'smart
     if (totalWeight <= 0) {
         return {
             valid: false,
-            startMs, endMs, targetClicks: clicks, durationMs, durationFormatted,
+            startMs, endMs, targetClicks: requests, durationMs, durationFormatted,
             slices: [], summaryBlocks: [], avgIntervalSec
         };
     }
@@ -201,7 +170,7 @@ function buildTimeDistribution({ startTime, endTime, targetClicks, mode = 'smart
     // 2. Allocate exact quotas (Hare-Niemeyer largest remainder method)
     let totalAllocated = 0;
     const slicesWithQuota = rawSlices.map((s, index) => {
-        const exact = clicks * (s.weight / totalWeight);
+        const exact = requests * (s.weight / totalWeight);
         const quota = Math.floor(exact);
         totalAllocated += quota;
         return {
@@ -212,42 +181,40 @@ function buildTimeDistribution({ startTime, endTime, targetClicks, mode = 'smart
         };
     });
 
-    let remainderClicks = clicks - totalAllocated;
+    let remainderRequests = requests - totalAllocated;
     const sortedByRemainder = [...slicesWithQuota].sort((a, b) => b.remainder - a.remainder);
-    for (let i = 0; i < sortedByRemainder.length && remainderClicks > 0; i++) {
+    for (let i = 0; i < sortedByRemainder.length && remainderRequests > 0; i++) {
         const targetIndex = sortedByRemainder[i].index;
         slicesWithQuota[targetIndex].quota += 1;
-        remainderClicks--;
+        remainderRequests--;
     }
 
     // Compute percent for each slice
     const slices = slicesWithQuota.map(s => ({
         ...s,
-        percent: clicks > 0 ? Number(((s.quota / clicks) * 100).toFixed(1)) : 0
+        percent: requests > 0 ? Number(((s.quota / requests) * 100).toFixed(1)) : 0
     }));
 
     // 3. Build human-friendly summary blocks for UI display
     let summaryBlocks = [];
 
     if (durationMs <= 60 * 60 * 1000) {
-        // Short time span (<= 1 hour): single summary block with exact time
         summaryBlocks = [{
             id: 'exact_span',
             label: `⏱️ ${slices[0].startStr} → ${slices[slices.length - 1].endStr} (${durationFormatted})`,
-            quota: clicks,
+            quota: requests,
             percent: 100,
             color: '#818cf8',
             durationFormatted
         }];
     } else {
-        // Multi-hour: Group by standard categories
         for (const bDef of TIME_BLOCK_DEFINITIONS) {
             const matchingSlices = slices.filter(s => bDef.hours.includes(s.hourOfDay));
             if (matchingSlices.length === 0) continue;
 
             const blockQuota = matchingSlices.reduce((sum, s) => sum + s.quota, 0);
             const blockDurationMs = matchingSlices.reduce((sum, s) => sum + s.durationMs, 0);
-            const blockPercent = Number(((blockQuota / clicks) * 100).toFixed(1));
+            const blockPercent = Number(((blockQuota / requests) * 100).toFixed(1));
 
             summaryBlocks.push({
                 id: bDef.id,
@@ -264,9 +231,9 @@ function buildTimeDistribution({ startTime, endTime, targetClicks, mode = 'smart
         valid: true,
         startMs,
         endMs,
-        targetClicks: clicks,
+        targetClicks: requests,
         mode,
-        timezoneOffsetMinutes: Number.isFinite(Number(timezoneOffsetMinutes)) ? Number(timezoneOffsetMinutes) : null,
+        timezoneOffsetMinutes: hasTimezoneOffset(timezoneOffsetMinutes) ? Number(timezoneOffsetMinutes) : null,
         durationMs,
         durationFormatted,
         avgIntervalSec,
@@ -276,7 +243,123 @@ function buildTimeDistribution({ startTime, endTime, targetClicks, mode = 'smart
 }
 
 /**
- * Generate sorted click timestamps for the campaign scheduler
+ * Dynamically computes the adaptive interval until the next request.
+ * Automatically recalibrates pace if server lags or pauses, preventing bursts!
+ *
+ * @param {Object} params
+ * @param {number} params.now - Current timestamp (epoch ms)
+ * @param {number} params.endTime - Campaign end timestamp (epoch ms)
+ * @param {number} params.remainingRequests - Target requests remaining to fulfill
+ * @param {string} params.mode - 'smart' | 'even'
+ * @param {number|null} params.timezoneOffsetMinutes - Browser timezone offset
+ * @returns {Object} { valid, timeRemainingMs, idealIntervalMs, jitteredIntervalMs, currentRatePerHour, quotaCurrentSlice }
+ */
+function calculateAdaptiveNextInterval({
+    now = Date.now(),
+    endTime,
+    remainingRequests,
+    mode = 'smart',
+    timezoneOffsetMinutes = null
+}) {
+    const timeRemainingMs = endTime - now;
+    if (timeRemainingMs <= 0 || remainingRequests <= 0) {
+        return {
+            valid: false,
+            timeRemainingMs: Math.max(0, timeRemainingMs),
+            remainingRequests: Math.max(0, remainingRequests),
+            idealIntervalMs: 0,
+            jitteredIntervalMs: 0,
+            currentRatePerHour: 0
+        };
+    }
+
+    if (mode === 'even') {
+        const idealIntervalMs = timeRemainingMs / remainingRequests;
+        const jitter = 0.92 + 0.16 * Math.random();
+        const jitteredIntervalMs = Math.max(50, Math.round(idealIntervalMs * jitter));
+        const currentRatePerHour = Number(((3600000 / idealIntervalMs)).toFixed(1));
+
+        return {
+            valid: true,
+            timeRemainingMs,
+            remainingRequests,
+            idealIntervalMs: Math.round(idealIntervalMs),
+            jitteredIntervalMs,
+            currentRatePerHour,
+            quotaCurrentSlice: Math.max(1, Math.round(remainingRequests * (Math.min(3600000, timeRemainingMs) / timeRemainingMs)))
+        };
+    }
+
+    // SMART MODE:
+    // Partition remaining time [now, endTime] into slices and weight them
+    const remainingSlices = [];
+    let cur = now;
+    while (cur < endTime) {
+        const nextHour = nextHourForTimezone(cur, timezoneOffsetMinutes);
+        const sliceEnd = Math.min(endTime, nextHour);
+        const sliceDur = sliceEnd - cur;
+        const hour = getHourForTimezone(cur, timezoneOffsetMinutes);
+        const baseW = SMART_HOURLY_WEIGHTS[hour] !== undefined ? SMART_HOURLY_WEIGHTS[hour] : 1.0;
+        const weight = baseW * (sliceDur / 3600000);
+
+        remainingSlices.push({
+            start: cur,
+            end: sliceEnd,
+            durationMs: sliceDur,
+            hour,
+            baseW,
+            weight
+        });
+        cur = sliceEnd;
+    }
+
+    const totalRemainingWeight = remainingSlices.reduce((sum, s) => sum + s.weight, 0);
+    if (totalRemainingWeight <= 0 || remainingSlices.length === 0) {
+        const fallbackInterval = timeRemainingMs / remainingRequests;
+        return {
+            valid: true,
+            timeRemainingMs,
+            remainingRequests,
+            idealIntervalMs: Math.round(fallbackInterval),
+            jitteredIntervalMs: Math.round(fallbackInterval * (0.92 + 0.16 * Math.random())),
+            currentRatePerHour: Number(((3600000 / fallbackInterval)).toFixed(1)),
+            quotaCurrentSlice: remainingRequests
+        };
+    }
+
+    // First slice is the current immediate slice
+    const currentSlice = remainingSlices[0];
+    const currentSliceFraction = currentSlice.weight / totalRemainingWeight;
+    const currentSliceQuota = remainingRequests * currentSliceFraction;
+
+    let idealIntervalMs;
+    if (currentSliceQuota >= 1) {
+        idealIntervalMs = currentSlice.durationMs / currentSliceQuota;
+    } else {
+        const spreadQuota = Math.max(currentSliceQuota, 0.05);
+        idealIntervalMs = currentSlice.durationMs / spreadQuota;
+    }
+
+    idealIntervalMs = Math.min(timeRemainingMs, Math.max(50, idealIntervalMs));
+    const jitter = 0.92 + 0.16 * Math.random();
+    const jitteredIntervalMs = Math.max(50, Math.round(idealIntervalMs * jitter));
+    const currentRatePerHour = Number(((3600000 / idealIntervalMs)).toFixed(1));
+
+    return {
+        valid: true,
+        timeRemainingMs,
+        remainingRequests,
+        idealIntervalMs: Math.round(idealIntervalMs),
+        jitteredIntervalMs,
+        quotaCurrentSlice: Number(currentSliceQuota.toFixed(2)),
+        currentRatePerHour,
+        currentHour: currentSlice.hour,
+        currentHourWeight: currentSlice.baseW
+    };
+}
+
+/**
+ * Generate sorted request timestamps (legacy helper & baseline verification)
  */
 function generateClickSchedule(startMs, endMs, count, mode = 'smart', customBlocks = null, timezoneOffsetMinutes = null) {
     const dist = buildTimeDistribution({
@@ -284,14 +367,12 @@ function generateClickSchedule(startMs, endMs, count, mode = 'smart', customBloc
         endTime: endMs,
         targetClicks: count,
         mode,
-        customBlocks,
         timezoneOffsetMinutes
     });
 
     if (!dist.valid || dist.slices.length === 0) return [];
 
     const timestamps = [];
-
     for (const slice of dist.slices) {
         if (slice.quota <= 0) continue;
         const subBucketSize = slice.durationMs / slice.quota;
@@ -307,33 +388,17 @@ function generateClickSchedule(startMs, endMs, count, mode = 'smart', customBloc
     return timestamps;
 }
 
-// Support browser and node module
-if (typeof window !== 'undefined') {
-    window.TimeDistribution = {
-        SMART_HOURLY_WEIGHTS,
-        CUSTOM_LEVEL_WEIGHTS,
-        TIME_BLOCK_DEFINITIONS,
-        toOffsetDate,
-        getHourForTimezone,
-        nextHourForTimezone,
-        buildHourlyWeightsFromCustomBlocks,
-        formatDuration,
-        buildTimeDistribution,
-        generateClickSchedule
-    };
-}
-
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         SMART_HOURLY_WEIGHTS,
-        CUSTOM_LEVEL_WEIGHTS,
         TIME_BLOCK_DEFINITIONS,
+        hasTimezoneOffset,
         toOffsetDate,
         getHourForTimezone,
         nextHourForTimezone,
-        buildHourlyWeightsFromCustomBlocks,
         formatDuration,
         buildTimeDistribution,
+        calculateAdaptiveNextInterval,
         generateClickSchedule
     };
 }

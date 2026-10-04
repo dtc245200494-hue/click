@@ -1,1046 +1,716 @@
-// ─── Socket connection ─────────────────────────────────────────────────────────
-const socket = io();
+/**
+ * app.js - Frontend Controller for Traffic Benchmark Runner
+ * Handles Real-time Socket.IO, Campaign CRUD, Distribution Visualizer, and Live Log Stream
+ */
 
-// ─── App State ─────────────────────────────────────────────────────────────────
-let activeCampaignId = null;
-const campaignStates = new Map();  // id -> { status, config, stats, logs }
+document.addEventListener('DOMContentLoaded', () => {
+    // ─── Socket.IO & State ─────────────────────────────────────────────────────────
+    const socket = io();
+    let campaigns = [];
+    let selectedCampaignId = null;
+    let autoScrollLogs = true;
 
-function escapeHtml(value) {
-    return String(value ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
+    // ─── DOM References ───────────────────────────────────────────────────────────
+    const wsStatus = document.getElementById('wsStatus');
+    const globalTotalCampaigns = document.getElementById('globalTotalCampaigns');
+    const globalRunningCampaigns = document.getElementById('globalRunningCampaigns');
+    const globalSuccessRequests = document.getElementById('globalSuccessRequests');
+    const globalAvgLatency = document.getElementById('globalAvgLatency');
+    const campaignCountBadge = document.getElementById('campaignCountBadge');
+    const campaignsContainer = document.getElementById('campaignsContainer');
+    const emptyCampaignsState = document.getElementById('emptyCampaignsState');
+    const consoleLogs = document.getElementById('consoleLogs');
+    const btnClearLogs = document.getElementById('btnClearLogs');
 
-// ─── DOM refs ──────────────────────────────────────────────────────────────────
-const tabsArea          = document.getElementById('campaigns-tabs-area');
-const addCampaignBtn    = document.getElementById('add-campaign-btn');
-const modal             = document.getElementById('add-campaign-modal');
-const modalCloseBtn     = document.getElementById('modal-close-btn');
-const modalCancelBtn    = document.getElementById('modal-cancel-btn');
-const addCampaignForm   = document.getElementById('add-campaign-form');
-const modalError        = document.getElementById('modal-error');
-const modalSubmitBtn    = document.getElementById('modal-submit-btn');
+    // Chart tab
+    const chartCampaignTitle = document.getElementById('chartCampaignTitle');
+    const chartCampaignSubtitle = document.getElementById('chartCampaignSubtitle');
+    const chartSummaryBlocks = document.getElementById('chartSummaryBlocks');
+    const chartBarsWrap = document.getElementById('chartBarsWrap');
 
-const emptyCampaignsState    = document.getElementById('empty-campaigns-state');
-const campaignPanelsContainer = document.getElementById('campaign-panels-container');
-const activeCampaignName     = document.getElementById('active-campaign-name');
-const campaignStatusPill     = document.getElementById('campaign-status-pill');
-const consoleLogs            = document.getElementById('console-logs');
-const clearLogBtn            = document.getElementById('clear-log-btn');
-const exportLogBtn           = document.getElementById('export-log-btn');
-const stopBtn                = document.getElementById('stop-btn');
-const resetStatsBtn          = document.getElementById('reset-stats-btn');
-const exportStatsBtn         = document.getElementById('export-stats-btn');
+    // Modal elements
+    const campaignModal = document.getElementById('campaignModal');
+    const campaignForm = document.getElementById('campaignForm');
+    const modalTitle = document.getElementById('modalTitle');
+    const editCampaignId = document.getElementById('editCampaignId');
+    const btnOpenCreateModal = document.getElementById('btnOpenCreateModal');
+    const btnEmptyCreate = document.getElementById('btnEmptyCreate');
+    const btnCloseModal = document.getElementById('btnCloseModal');
+    const btnCancelModal = document.getElementById('btnCancelModal');
+    const btnTestUrl = document.getElementById('btnTestUrl');
+    const pingResult = document.getElementById('pingResult');
 
-const statTotalClicks   = document.getElementById('stat-total-clicks');
-const statSuccessClicks = document.getElementById('stat-success-clicks');
-const statFailedClicks  = document.getElementById('stat-failed-clicks');
-const statIps           = document.getElementById('stat-ips');
-const campaignProgressBar = document.getElementById('campaign-progress-bar');
-const progressBarFill   = document.querySelector('.progress-bar-fill');
-const progressPercent   = document.getElementById('progress-percent');
-const statEtaTime       = document.getElementById('stat-eta-time');
-const statTimeRemaining = document.getElementById('stat-time-remaining');
+    // Form inputs
+    const inputName = document.getElementById('inputName');
+    const inputTargetUrl = document.getElementById('inputTargetUrl');
+    const inputTargetRequests = document.getElementById('inputTargetRequests');
+    const inputStartTime = document.getElementById('inputStartTime');
+    const inputEndTime = document.getElementById('inputEndTime');
+    const inputMaxConcurrent = document.getElementById('inputMaxConcurrent');
+    const inputTimeoutMs = document.getElementById('inputTimeoutMs');
+    const modeDescText = document.getElementById('modeDescText');
+    const previewDurationBadge = document.getElementById('previewDurationBadge');
+    const modalPreviewBars = document.getElementById('modalPreviewBars');
 
-const infoUrl          = document.getElementById('info-url');
-const infoStart        = document.getElementById('info-start');
-const infoEnd          = document.getElementById('info-end');
-const infoTarget       = document.getElementById('info-target');
-const infoBrowser      = document.getElementById('info-browser');
-const infoScheduleMode = document.getElementById('info-schedule-mode');
+    // ─── Toast System ─────────────────────────────────────────────────────────────
+    function showToast(message, type = 'info') {
+        const container = document.getElementById('toastContainer');
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        const icons = {
+            success: 'fa-circle-check',
+            error: 'fa-circle-xmark',
+            info: 'fa-circle-info'
+        };
+        toast.innerHTML = `<i class="fa-solid ${icons[type] || 'fa-info'}"></i><span>${message}</span>`;
+        container.appendChild(toast);
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(30px)';
+            toast.style.transition = 'all 0.3s ease';
+            setTimeout(() => toast.remove(), 300);
+        }, 3500);
+    }
 
-const proxyRegionSelect   = document.getElementById('proxy-region');
-const proxyKeysTextarea   = document.getElementById('proxy-keys-textarea');
-const proxyConfigForm     = document.getElementById('proxy-config-form');
-const proxySaveMsg        = document.getElementById('proxy-save-msg');
-const proxyKeyCountBadge  = document.getElementById('proxy-key-count-badge');
-const poolKeyCountHeader  = document.getElementById('pool-key-count');
+    // ─── Format Helpers ───────────────────────────────────────────────────────────
+    function formatDateTimeLocal(date) {
+        const pad = (n) => String(n).padStart(2, '0');
+        const y = date.getFullYear();
+        const m = pad(date.getMonth() + 1);
+        const d = pad(date.getDate());
+        const hh = pad(date.getHours());
+        const mm = pad(date.getMinutes());
+        return `${y}-${m}-${d}T${hh}:${mm}`;
+    }
 
-const newCampaignStart    = document.getElementById('new-campaign-start');
-const newCampaignEnd      = document.getElementById('new-campaign-end');
-const newCampaignClicks   = document.getElementById('new-campaign-clicks');
+    // ─── Socket Events ────────────────────────────────────────────────────────────
+    socket.on('connect', () => {
+        wsStatus.classList.remove('offline');
+        wsStatus.querySelector('.status-label').textContent = 'Kết nối Live';
+    });
 
-// Schedule Mode elements
-const cardModeSmart = document.getElementById('card-mode-smart');
-const cardModeEven  = document.getElementById('card-mode-even');
-const cardModeCustom = document.getElementById('card-mode-custom');
-const customBlocksPanel = document.getElementById('custom-blocks-panel');
-const hourlyPreviewBox = document.getElementById('hourly-preview-box');
-const previewTotalTime = document.getElementById('preview-total-time');
-const hourlyPreviewGrid = document.getElementById('hourly-preview-grid');
+    socket.on('disconnect', () => {
+        wsStatus.classList.add('offline');
+        wsStatus.querySelector('.status-label').textContent = 'Mất kết nối';
+    });
 
-let currentScheduleMode = 'smart';
+    socket.on('campaigns-list', (list) => {
+        campaigns = list || [];
+        renderCampaignsList();
+        updateGlobalMetrics();
+    });
 
-// ─── Datetime init ─────────────────────────────────────────────────────────────
-function formatLocalDateTime(date) {
-    const tzoffset = date.getTimezoneOffset() * 60000;
-    return (new Date(date.getTime() - tzoffset)).toISOString().slice(0, 16);
-}
+    socket.on('stats-update', (stats) => {
+        updateCampaignCardStats(stats);
+        updateGlobalMetrics();
+    });
 
-function initModalDatetimes() {
-    const now = new Date();
-    const end = new Date(now.getTime() + 4 * 3600000);
-    newCampaignStart.value = formatLocalDateTime(now);
-    newCampaignEnd.value = formatLocalDateTime(end);
-}
-initModalDatetimes();
+    socket.on('log', (logObj) => {
+        appendLogEntry(logObj);
+    });
 
-// ─── Schedule Mode Switcher ───────────────────────────────────────────────────
-function setScheduleMode(mode) {
-    currentScheduleMode = mode;
-    [cardModeSmart, cardModeEven, cardModeCustom].forEach(card => {
-        if (card) {
-            card.style.background = 'rgba(255,255,255,0.03)';
-            card.style.borderColor = 'rgba(255,255,255,0.08)';
-            const title = card.querySelector('div:first-of-type');
-            if (title) title.style.color = '#e2e8f0';
+    // ─── Fetch Campaigns on Load ──────────────────────────────────────────────────
+    async function loadCampaigns() {
+        try {
+            const res = await fetch('/api/campaigns');
+            const data = await res.json();
+            if (data.success) {
+                campaigns = data.data || [];
+                renderCampaignsList();
+                updateGlobalMetrics();
+                if (campaigns.length > 0 && !selectedCampaignId) {
+                    selectCampaignForChart(campaigns[0].id);
+                }
+            }
+        } catch (e) {
+            console.error('Lỗi tải danh sách chiến dịch:', e);
         }
-    });
-
-    const activeCard = mode === 'smart' ? cardModeSmart : (mode === 'even' ? cardModeEven : cardModeCustom);
-    if (activeCard) {
-        activeCard.style.background = 'rgba(99,102,241,0.15)';
-        activeCard.style.borderColor = 'rgba(99,102,241,0.5)';
-        const title = activeCard.querySelector('div:first-of-type');
-        if (title) title.style.color = '#818cf8';
-        const radio = activeCard.querySelector('input[type="radio"]');
-        if (radio) radio.checked = true;
     }
 
-    if (customBlocksPanel) {
-        customBlocksPanel.style.display = mode === 'custom' ? 'block' : 'none';
+    // ─── Global Metrics ───────────────────────────────────────────────────────────
+    function updateGlobalMetrics() {
+        globalTotalCampaigns.textContent = campaigns.length;
+        const running = campaigns.filter(c => c.status === 'running').length;
+        globalRunningCampaigns.textContent = running;
+        const totalSuccess = campaigns.reduce((acc, c) => acc + (c.successRequests || 0), 0);
+        globalSuccessRequests.textContent = totalSuccess.toLocaleString('vi-VN');
+        campaignCountBadge.textContent = `${campaigns.length} chiến dịch`;
     }
 
-    updateHourlyPreview();
-}
+    // ─── Render Campaign Cards ────────────────────────────────────────────────────
+    function renderCampaignsList() {
+        if (!campaignsContainer) return;
 
-if (cardModeSmart) cardModeSmart.addEventListener('click', () => setScheduleMode('smart'));
-if (cardModeEven) cardModeEven.addEventListener('click', () => setScheduleMode('even'));
-if (cardModeCustom) cardModeCustom.addEventListener('click', () => setScheduleMode('custom'));
+        if (campaigns.length === 0) {
+            campaignsContainer.innerHTML = '';
+            campaignsContainer.appendChild(emptyCampaignsState);
+            emptyCampaignsState.style.display = 'flex';
+            return;
+        }
 
-// ─── Hourly Distribution Preview Calculator ───────────────────────────────────
-function getCustomBlocksFromUI() {
-    return {
-        night: document.getElementById('custom-block-night')?.value || 'low',
-        early_morning: document.getElementById('custom-block-early')?.value || 'medium',
-        morning: document.getElementById('custom-block-morn')?.value || 'high',
-        noon: document.getElementById('custom-block-noon')?.value || 'medium',
-        afternoon: document.getElementById('custom-block-after')?.value || 'high',
-        evening: document.getElementById('custom-block-eve')?.value || 'high',
-        late_night: document.getElementById('custom-block-late')?.value || 'medium'
-    };
-}
+        emptyCampaignsState.style.display = 'none';
+        campaignsContainer.innerHTML = '';
 
-function updateHourlyPreview() {
-    const clicks = parseInt(newCampaignClicks.value) || 0;
-    const startVal = newCampaignStart.value;
-    const endVal = newCampaignEnd.value;
-    if (!clicks || !startVal || !endVal || !hourlyPreviewBox) {
-        if (hourlyPreviewBox) hourlyPreviewBox.style.display = 'none';
-        return;
-    }
+        campaigns.forEach(c => {
+            const card = document.createElement('div');
+            card.className = `campaign-card ${c.id === selectedCampaignId ? 'selected' : ''}`;
+            card.id = `card-c-${c.id}`;
 
-    const distBuilder = (window.TimeDistribution && window.TimeDistribution.buildTimeDistribution)
-        ? window.TimeDistribution.buildTimeDistribution
-        : (typeof buildTimeDistribution !== 'undefined' ? buildTimeDistribution : null);
+            const statusClass = `status-${c.status}`;
+            const statusLabels = {
+                running: '<i class="fa-solid fa-play"></i> Đang chạy',
+                waiting: '<i class="fa-solid fa-clock"></i> Chờ đến giờ',
+                paused: '<i class="fa-solid fa-pause"></i> Tạm dừng',
+                completed: '<i class="fa-solid fa-check"></i> Hoàn thành',
+                expired: '<i class="fa-solid fa-ban"></i> Hết giờ',
+                stopped: '<i class="fa-solid fa-stop"></i> Đã dừng'
+            };
 
-    if (!distBuilder) return;
+            const percent = c.progressPercent || 0;
+            const remaining = c.remaining !== undefined ? c.remaining : Math.max(0, c.targetRequests - (c.successRequests || 0));
 
-    const customBlocks = currentScheduleMode === 'custom' ? getCustomBlocksFromUI() : null;
-    const dist = distBuilder({
-        startTime: startVal,
-        endTime: endVal,
-        targetClicks: clicks,
-        mode: currentScheduleMode,
-        customBlocks,
-        timezoneOffsetMinutes: new Date().getTimezoneOffset()
-    });
+            card.innerHTML = `
+                <div class="campaign-header-row">
+                    <div class="campaign-title-wrap">
+                        <span class="campaign-name" title="${c.name}">${c.name}</span>
+                        <span class="mode-badge ${c.scheduleMode}">${c.scheduleMode}</span>
+                    </div>
+                    <span class="status-tag ${statusClass}" id="status-tag-${c.id}">
+                        ${statusLabels[c.status] || c.status}
+                    </span>
+                </div>
 
-    if (!dist.valid || dist.summaryBlocks.length === 0) {
-        hourlyPreviewBox.style.display = 'none';
-        return;
-    }
+                <div class="campaign-url-row">
+                    <i class="fa-solid fa-link"></i>
+                    <span>${c.targetUrl}</span>
+                </div>
 
-    previewTotalTime.textContent = `Thi gian: ${dist.durationFormatted}`;
-
-    const speedSummaryEl = document.getElementById('preview-speed-summary');
-    if (speedSummaryEl) {
-        const modeLabel = currentScheduleMode === 'smart' ? 'Thong minh' : (currentScheduleMode === 'even' ? 'Dong deu' : 'Tuy chinh');
-        speedSummaryEl.innerHTML = `Muc tieu <strong>${clicks} luot</strong> / <strong>${dist.durationFormatted}</strong> (TB <strong>~${dist.avgIntervalSec}s/luot</strong>) &bull; <em>${modeLabel}</em>`;
-    }
-
-    // --- Feasibility Check ---
-    const proxyKeysRaw = document.getElementById('proxy-keys-textarea')?.value || '';
-    const keyCount = Math.max(1, proxyKeysRaw.split(/[\n,]/).map(k => k.trim()).filter(k => k.length > 5).length);
-    const campaignCdRaw = document.getElementById('new-cooldown')?.value;
-    const cooldownSec = (campaignCdRaw !== '' && campaignCdRaw !== undefined && !isNaN(parseInt(campaignCdRaw)))
-        ? Math.max(0, parseInt(campaignCdRaw))
-        : parseInt(document.getElementById('proxy-cooldown')?.value ?? '30', 10);
-    const browserModeVal = document.getElementById('new-browser-mode')?.value || 'request';
-    const avgWorkerSec = browserModeVal === 'request' ? 0.5 : 4;
-    const secPerClickPerKey = cooldownSec + avgWorkerSec;
-    const durationSec = dist.durationMs / 1000;
-    const maxAchievable = Math.floor((keyCount / secPerClickPerKey) * durationSec);
-    const minRequiredCooldown = Math.max(0, Math.ceil((keyCount * durationSec / clicks) - avgWorkerSec));
-
-    let feasibilityEl = document.getElementById('preview-feasibility-warn');
-    if (!feasibilityEl) {
-        feasibilityEl = document.createElement('div');
-        feasibilityEl.id = 'preview-feasibility-warn';
-        feasibilityEl.style.cssText = 'margin-top: 10px; border-radius: 8px; padding: 10px 14px; font-size: 12px; line-height: 1.6;';
-        hourlyPreviewBox.insertBefore(feasibilityEl, hourlyPreviewBox.querySelector('#hourly-preview-grid') || null);
-    }
-
-    if (maxAchievable < clicks) {
-        const deficit = clicks - maxAchievable;
-        const safeCd = Math.max(0, minRequiredCooldown - 1);
-        feasibilityEl.style.background = 'rgba(239,68,68,0.1)';
-        feasibilityEl.style.border = '1px solid rgba(239,68,68,0.3)';
-        feasibilityEl.style.color = '#fca5a5';
-        feasibilityEl.innerHTML = `
-            <div><strong>Khong du toc do!</strong> Voi ${keyCount} key + cooldown ${cooldownSec}s, toi da ~${maxAchievable} luot trong ${dist.durationFormatted} (thieu ~${deficit}).</div>
-            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 8px; background: rgba(0,0,0,0.2); padding: 8px 10px; border-radius: 6px;">
-                <span style="color: #f87171;">💡 Can Cooldown &le; <strong>${safeCd}s</strong></span>
-                <button type="button" onclick="applySuggestedCooldown(${safeCd})" style="background: linear-gradient(135deg, #ef4444, #dc2626); border: none; border-radius: 6px; padding: 5px 12px; font-size: 11.5px; font-weight: 700; color: #fff; cursor: pointer; font-family: 'Outfit', sans-serif;">
-                    ⚡ Tu dong ap dung Cooldown = ${safeCd}s
-                </button>
-            </div>
-        `;
-    } else {
-        const endDate = new Date(dist.endMs);
-        const endFormatted = endDate.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) + ' ngay ' + endDate.toLocaleDateString('vi-VN');
-        feasibilityEl.style.background = 'rgba(16,185,129,0.08)';
-        feasibilityEl.style.border = '1px solid rgba(16,185,129,0.2)';
-        feasibilityEl.style.color = '#6ee7b7';
-        feasibilityEl.innerHTML = `
-            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
-                <div>
-                    <div style="font-weight: 700; color: #10b981; font-size: 13px;">✅ Cong suat ly thuyet du cho muc tieu</div>
-                    <div style="font-size: 12px; color: #94a3b8; margin-top: 3px;">
-                        Lich duoc phan bo den: <strong style="color: #34d399;">${endFormatted}</strong>. Ket qua thuc te con phu thuoc loi mang/worker va se khong chay bu sau gio ket thuc.
+                <div class="progress-container">
+                    <div class="progress-header">
+                        <span>Tiến độ: <b id="prog-count-${c.id}">${c.successRequests || 0} / ${c.targetRequests}</b> requests</span>
+                        <span id="prog-pct-${c.id}">${percent}%</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill" id="prog-bar-${c.id}" style="width: ${percent}%;"></div>
                     </div>
                 </div>
-                <div style="font-size: 11px; background: rgba(16,185,129,0.12); border: 1px solid rgba(16,185,129,0.2); padding: 4px 10px; border-radius: 6px; color: #6ee7b7;">
-                    ${keyCount} key &bull; Cooldown: ${cooldownSec}s
+
+                <div class="campaign-stats-pill-grid">
+                    <div class="stat-pill">
+                        <span class="stat-pill-label">Thành công</span>
+                        <span class="stat-pill-val val-success" id="stat-succ-${c.id}">${c.successRequests || 0}</span>
+                    </div>
+                    <div class="stat-pill">
+                        <span class="stat-pill-label">Thất bại</span>
+                        <span class="stat-pill-val val-failed" id="stat-fail-${c.id}">${c.failedRequests || 0}</span>
+                    </div>
+                    <div class="stat-pill">
+                        <span class="stat-pill-label">Còn lại</span>
+                        <span class="stat-pill-val val-remaining" id="stat-rem-${c.id}">${remaining}</span>
+                    </div>
+                    <div class="stat-pill">
+                        <span class="stat-pill-label">In-Flight</span>
+                        <span class="stat-pill-val val-workers" id="stat-workers-${c.id}">0 / ${c.maxConcurrent || 3}</span>
+                    </div>
                 </div>
-            </div>
-        `;
-    }
 
-    hourlyPreviewGrid.innerHTML = '';
-    for (const b of dist.summaryBlocks) {
-        const chip = document.createElement('div');
-        chip.style.cssText = 'background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; padding: 8px 10px; font-size: 11.5px;';
-        chip.innerHTML = `
-            <div style="color: #94a3b8; font-weight: 600; margin-bottom: 3px; font-size: 11px;">${b.label}</div>
-            <div style="display: flex; align-items: baseline; justify-content: space-between;">
-                <span style="font-size: 14px; font-weight: 700; color: ${b.color};">${b.quota} luot</span>
-                <span style="color: #64748b; font-size: 11px;">${b.percent}%</span>
-            </div>
-        `;
-        hourlyPreviewGrid.appendChild(chip);
-    }
-
-    // Kich ban chi tiet theo phut
-    let schedEl = document.getElementById('preview-schedule-timeline');
-    if (!schedEl) {
-        schedEl = document.createElement('div');
-        schedEl.id = 'preview-schedule-timeline';
-        schedEl.style.cssText = 'margin-top: 12px;';
-        hourlyPreviewBox.appendChild(schedEl);
-    }
-    const schedBuilder = window.TimeDistribution && window.TimeDistribution.generateClickSchedule;
-    if (schedBuilder && clicks <= 500) {
-        const customB = currentScheduleMode === 'custom' ? getCustomBlocksFromUI() : null;
-        const timestamps = schedBuilder(dist.startMs, dist.endMs, clicks, currentScheduleMode, customB);
-        const minuteBuckets = new Map();
-        for (const ts of timestamps) {
-            const d = new Date(ts);
-            const key = String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
-            minuteBuckets.set(key, (minuteBuckets.get(key) || 0) + 1);
-        }
-        const sortedBuckets = [...minuteBuckets.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-        const maxCount = Math.max(...minuteBuckets.values());
-        const MAX_SHOW = 20;
-        const makeRow = ([time, count]) => {
-            const barPct = Math.round((count / maxCount) * 100);
-            return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">'
-                + '<span style="font-family:monospace;font-size:12px;color:#818cf8;min-width:42px;">' + time + '</span>'
-                + '<div style="flex:1;background:rgba(99,102,241,0.08);border-radius:4px;height:6px;overflow:hidden;">'
-                + '<div style="width:' + barPct + '%;height:100%;background:linear-gradient(90deg,#6366f1,#818cf8);border-radius:4px;"></div></div>'
-                + '<span style="font-size:11px;color:#94a3b8;min-width:54px;text-align:right;">' + count + ' click</span></div>';
-        };
-        const showing = sortedBuckets.slice(0, MAX_SHOW);
-        const hidden  = sortedBuckets.slice(MAX_SHOW);
-        let html = showing.map(makeRow).join('');
-        if (hidden.length > 0) {
-            html += '<div id="pst-hidden" style="display:none;">' + hidden.map(makeRow).join('') + '</div>';
-            html += '<button onclick="var h=document.getElementById(\'pst-hidden\');var b=document.getElementById(\'pst-toggle\');if(h.style.display===\'none\'){h.style.display=\'block\';b.textContent=\'Thu gon\'}else{h.style.display=\'none\';b.textContent=\'... xem them ' + hidden.length + ' phut\';}" id="pst-toggle" style="margin-top:6px;font-size:11px;color:#6366f1;background:none;border:none;cursor:pointer;padding:0;">... xem them ' + hidden.length + ' phut</button>';
-        }
-        schedEl.innerHTML = '<div style="font-size:11px;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Lich click du kien (theo phut)</div>'
-            + '<div style="max-height:200px;overflow-y:auto;padding-right:2px;">' + html + '</div>';
-    } else if (clicks > 500) {
-        schedEl.innerHTML = '<div style="font-size:11px;color:#64748b;margin-top:6px;">Qua nhieu click (>500) de hien lich tung phut.</div>';
-    } else {
-        schedEl.innerHTML = '';
-    }
-
-    hourlyPreviewBox.style.display = 'block';
-}
-
-[newCampaignClicks, newCampaignStart, newCampaignEnd, document.getElementById('new-browser-mode'), document.getElementById('new-cooldown')].forEach(el => {
-    if (el) {
-        el.addEventListener('input', updateHourlyPreview);
-        el.addEventListener('change', updateHourlyPreview);
-    }
-});
-
-// Bind custom block select dropdowns
-['custom-block-night', 'custom-block-early', 'custom-block-morn', 'custom-block-noon', 'custom-block-after', 'custom-block-eve', 'custom-block-late'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('change', updateHourlyPreview);
-});
-
-// ─── Modal open/close ──────────────────────────────────────────────────────────
-function openModal() {
-    initModalDatetimes();
-    addCampaignForm.reset();
-    initModalDatetimes(); // re-set after reset
-    setScheduleMode('smart');
-    modalError.style.display = 'none';
-    modal.classList.add('open');
-    updateHourlyPreview();
-    document.getElementById('new-campaign-url').focus();
-}
-function closeModal() {
-    modal.classList.remove('open');
-}
-addCampaignBtn.addEventListener('click', openModal);
-modalCloseBtn.addEventListener('click', closeModal);
-modalCancelBtn.addEventListener('click', closeModal);
-modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
-
-// ─── Add Campaign Form submit ──────────────────────────────────────────────────
-addCampaignForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    modalError.style.display = 'none';
-
-    const startVal = newCampaignStart.value;
-    const endVal   = newCampaignEnd.value;
-    const startTs  = new Date(startVal).getTime();
-    const endTs    = new Date(endVal).getTime();
-
-    if (!startVal || !endVal || isNaN(startTs) || isNaN(endTs)) {
-        showModalError('Vui long chon thoi gian bat dau va ket thuc hop le.');
-        return;
-    }
-    if (endTs <= startTs) {
-        showModalError('Thoi gian ket thuc phai sau thoi gian bat dau.');
-        return;
-    }
-
-    let customBlocks = null;
-    if (currentScheduleMode === 'custom') {
-        customBlocks = {
-            night: document.getElementById('custom-block-night')?.value || 'low',
-            early_morning: document.getElementById('custom-block-early')?.value || 'medium',
-            morning: document.getElementById('custom-block-morn')?.value || 'high',
-            noon: document.getElementById('custom-block-noon')?.value || 'medium',
-            afternoon: document.getElementById('custom-block-after')?.value || 'high',
-            evening: document.getElementById('custom-block-eve')?.value || 'high',
-            late_night: document.getElementById('custom-block-late')?.value || 'medium'
-        };
-    }
-
-    const config = {
-        name: document.getElementById('new-campaign-name').value.trim() || null,
-        targetUrl: document.getElementById('new-campaign-url').value.trim(),
-        targetClicks: parseInt(newCampaignClicks.value),
-        startTime: startTs,
-        endTime: endTs,
-        startTimeStr: startVal,
-        endTimeStr: endVal,
-        timezoneOffsetMinutes: new Date().getTimezoneOffset(),
-        scheduleMode: currentScheduleMode,
-        customBlocks: customBlocks,
-        cleanMode: document.getElementById('new-clean-mode').value,
-        browserMode: document.getElementById('new-browser-mode').value,
-        cooldownSec: (() => { const cd = document.getElementById('new-cooldown')?.value; return (cd !== '' && cd !== undefined && !isNaN(parseInt(cd))) ? Math.max(0, parseInt(cd)) : null; })(),
-        dwellMin: parseInt(document.getElementById('new-dwell-min').value) || 2,
-        dwellMax: parseInt(document.getElementById('new-dwell-max').value) || 5,
-        humanActions: document.getElementById('new-human-actions').checked,
-        randomLinks: document.getElementById('new-random-links').checked,
-        dedupIp: document.getElementById('new-dedup-ip').checked
-    };
-
-    if (!config.targetUrl) { showModalError('URL muc tieu khong duoc de trong.'); return; }
-    if (!config.targetClicks || config.targetClicks < 1) { showModalError('So luot click phai >= 1.'); return; }
-    if (config.dwellMax < config.dwellMin) { showModalError('Thoi gian xem toi da phai >= toi thieu.'); return; }
-
-    modalSubmitBtn.disabled = true;
-    modalSubmitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Dang tao...';
-
-    try {
-        const res = await fetch('/api/campaigns', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(config)
-        });
-        const data = await res.json();
-        if (res.ok && data.success) {
-            closeModal();
-        } else {
-            showModalError(data.message || 'Loi tao chien dich.');
-        }
-    } catch (err) {
-        showModalError('Khong the ket noi may chu.');
-    } finally {
-        modalSubmitBtn.disabled = false;
-        modalSubmitBtn.innerHTML = '<i class="fa-solid fa-rocket"></i> Tao chien dich';
-    }
-});
-
-function showModalError(msg) {
-    modalError.textContent = msg;
-    modalError.style.display = 'block';
-}
-
-// ─── Proxy Config form ─────────────────────────────────────────────────────────
-proxyConfigForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const region = proxyRegionSelect.value;
-    const keys = proxyKeysTextarea.value
-        .split(/[\n,]/)
-        .map(k => k.trim())
-        .filter(k => k.length > 5);
-    const cooldownSec = parseInt(document.getElementById('proxy-cooldown')?.value ?? '30', 10);
-
-    const btn = document.getElementById('save-proxy-btn');
-    btn.disabled = true;
-    btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Dang luu...';
-
-    try {
-        const res = await fetch('/api/proxy-config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ region, keys, cooldownSec })
-        });
-        const data = await res.json();
-        if (res.ok && data.success) {
-            updateProxyPoolDisplay(keys.length);
-            proxySaveMsg.style.display = 'flex';
-            setTimeout(() => { proxySaveMsg.style.display = 'none'; }, 3000);
-        } else {
-            alert('Loi luu proxy: ' + (data.message || 'Unknown'));
-        }
-    } catch (err) {
-        alert('Khong the ket noi may chu.');
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Luu cau hinh Proxy';
-    }
-});
-
-function updateProxyPoolDisplay(count) {
-    proxyKeyCountBadge.textContent = count;
-    if (poolKeyCountHeader) poolKeyCountHeader.textContent = count;
-}
-
-// ─── Campaign tabs rendering ───────────────────────────────────────────────────
-function renderCampaignTabs(campaignList) {
-    // Remove existing tab buttons (keep add button)
-    const existingTabs = tabsArea.querySelectorAll('.tab-btn');
-    existingTabs.forEach(t => t.remove());
-
-    if (campaignList.length === 0) {
-        emptyCampaignsState.style.display = 'block';
-        campaignPanelsContainer.style.display = 'none';
-        return;
-    }
-
-    emptyCampaignsState.style.display = 'none';
-    campaignPanelsContainer.style.display = 'block';
-
-    // Insert tabs before the add button
-    for (const c of campaignList) {
-        const tab = createTabButton(c);
-        tabsArea.insertBefore(tab, addCampaignBtn);
-    }
-
-    // If active campaign no longer exists, switch to first
-    if (activeCampaignId === null || !campaignStates.has(activeCampaignId)) {
-        switchCampaign(campaignList[0].id);
-    } else {
-        // Re-apply active style
-        const activeTab = tabsArea.querySelector(`.tab-btn[data-campaign-id="${activeCampaignId}"]`);
-        if (activeTab) activeTab.classList.add('active');
-    }
-}
-
-let currentUserRole = 'admin';
-
-function applyRoleUI(role, username) {
-    currentUserRole = role;
-    const isGuest = role === 'guest';
-
-    document.body.classList.toggle('guest-mode', isGuest);
-
-    // Hide/show Add campaign button
-    if (addCampaignBtn) addCampaignBtn.style.display = isGuest ? 'none' : 'inline-flex';
-
-    // Hide/show Global Proxy Config card
-    const proxySection = document.querySelector('.proxy-pool-section');
-    if (proxySection) proxySection.style.display = isGuest ? 'none' : 'block';
-
-    // Hide/show Pool status header
-    const poolHeader = document.getElementById('pool-status-header');
-    if (poolHeader) poolHeader.style.display = isGuest ? 'none' : 'block';
-
-    // Hide/show Stop and Reset buttons
-    if (stopBtn) stopBtn.style.display = isGuest ? 'none' : 'inline-flex';
-    const resetBtn = document.getElementById('reset-stats-btn');
-    if (resetBtn) resetBtn.style.display = isGuest ? 'none' : 'inline-flex';
-
-    // Make export stats button prominent for guest
-    if (exportStatsBtn) {
-        exportStatsBtn.style.cssText = isGuest
-            ? 'color: #38bdf8; background: rgba(56,189,248,0.12); border: 1px solid rgba(56,189,248,0.35); border-radius: 8px; padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: "Outfit", sans-serif;'
-            : 'color: var(--primary); display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; background: transparent; border: none; cursor: pointer;';
-        exportStatsBtn.innerHTML = '<i class="fa-solid fa-file-arrow-down"></i> Tai Bao Cao';
-    }
-
-    // Hide/show delete buttons on campaign tabs
-    document.querySelectorAll('.tab-delete').forEach(btn => {
-        btn.style.display = isGuest ? 'none' : 'inline-flex';
-    });
-
-    // Show badge for user role in header
-    let userBadge = document.getElementById('header-user-badge');
-    if (!userBadge) {
-        userBadge = document.createElement('div');
-        userBadge.id = 'header-user-badge';
-        userBadge.style.cssText = 'font-size: 12px; font-weight: 600; padding: 5px 14px; border-radius: 20px; display: flex; align-items: center; gap: 6px; font-family: "Outfit", sans-serif;';
-        const logoutBtn = document.getElementById('logout-btn');
-        if (logoutBtn && logoutBtn.parentNode) {
-            logoutBtn.parentNode.insertBefore(userBadge, logoutBtn);
-        }
-    }
-    if (userBadge) {
-        if (isGuest) {
-            userBadge.style.background = 'rgba(34, 211, 238, 0.12)';
-            userBadge.style.border = '1px solid rgba(34, 211, 238, 0.3)';
-            userBadge.style.color = '#22d3ee';
-            userBadge.innerHTML = `<i class="fa-solid fa-eye"></i> Khach xem: <strong>${escapeHtml(username || '1')}</strong>`;
-        } else {
-            userBadge.style.background = 'rgba(99, 102, 241, 0.12)';
-            userBadge.style.border = '1px solid rgba(99, 102, 241, 0.3)';
-            userBadge.style.color = '#818cf8';
-            userBadge.innerHTML = `<i class="fa-solid fa-user-shield"></i> Quyen: <strong>ADMIN (${escapeHtml(username || 'admin')})</strong>`;
-        }
-    }
-}
-
-function createTabButton(c) {
-    const tab = document.createElement('button');
-    tab.type = 'button';
-    tab.className = 'tab-btn';
-    tab.setAttribute('data-campaign-id', c.id);
-    if (c.id === activeCampaignId) tab.classList.add('active');
-
-    const dotClass = statusToDotClass(c.status);
-    const displayName = c.name || `Chien dich ${c.id}`;
-
-    tab.innerHTML = `
-        <span class="tab-status-dot ${escapeHtml(dotClass)}"></span>
-        <span>${escapeHtml(displayName)}</span>
-        <button type="button" class="tab-delete" data-campaign-id="${escapeHtml(c.id)}" title="Xoa chien dich" style="display: ${currentUserRole === 'guest' ? 'none' : 'inline-flex'};">
-            <i class="fa-solid fa-xmark"></i>
-        </button>
-    `;
-
-    tab.addEventListener('click', (e) => {
-        if (e.target.closest('.tab-delete')) return;
-        switchCampaign(c.id);
-    });
-
-    tab.querySelector('.tab-delete').addEventListener('click', (e) => {
-        e.stopPropagation();
-        deleteCampaign(c.id, displayName);
-    });
-
-    return tab;
-}
-
-function statusToDotClass(status) {
-    const map = { running: 'active', waiting: 'waiting', completed: 'completed', expired: 'expired', stopped: '' };
-    return map[status] || '';
-}
-
-function updateTabStatus(campaignId, status) {
-    const tab = tabsArea.querySelector(`.tab-btn[data-campaign-id="${campaignId}"]`);
-    if (!tab) return;
-    const dot = tab.querySelector('.tab-status-dot');
-    if (dot) dot.className = `tab-status-dot ${statusToDotClass(status)}`;
-}
-
-// ─── Update info panel ────────────────────────────────────────────────────────
-function updateInfoPanel(config) {
-    if (!config) return;
-    infoUrl.textContent = config.targetUrl || '--';
-    infoStart.textContent = config.startTimeStr ? config.startTimeStr.replace('T', ' ') : '--';
-    infoEnd.textContent = config.endTimeStr ? config.endTimeStr.replace('T', ' ') : '--';
-    infoTarget.textContent = config.targetClicks ? `${config.targetClicks} luot` : '--';
-    const modeMap = { request: 'Request truc tiep (Sieu nhe)', headless: 'Chrome an (Headless)', headful: 'Chrome hien thi (Headful)' };
-    infoBrowser.textContent = modeMap[config.browserMode] || (config.browserMode || '--');
-
-    if (infoScheduleMode) {
-        const schedMap = {
-            'smart': '🧠 Thong minh theo gio (Smart)',
-            'even': '⚖️ Dong deu (Even)',
-            'custom': '⚙️ Tuy chinh theo khung (Custom)'
-        };
-        infoScheduleMode.textContent = schedMap[config.scheduleMode] || '🧠 Thong minh theo gio (Smart)';
-    }
-}
-
-// ─── Switch active campaign ────────────────────────────────────────────────────
-function switchCampaign(id) {
-    activeCampaignId = id;
-
-    // Update tab active state
-    tabsArea.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
-    const activeTab = tabsArea.querySelector(`.tab-btn[data-campaign-id="${id}"]`);
-    if (activeTab) activeTab.classList.add('active');
-
-    const state = campaignStates.get(id);
-    if (!state) return;
-
-    // Update header
-    activeCampaignName.textContent = state.config.name || `Chien dich ${id}`;
-
-    // Update info panel
-    updateInfoPanel(state.config);
-
-    // Update status pill
-    renderStatusPill(state.status);
-
-    // Update stop button
-    const isActive = ['running', 'waiting'].includes(state.status);
-    stopBtn.disabled = !isActive;
-
-    // Update progress bar visibility
-    const showProgress = ['running', 'waiting', 'completed', 'expired'].includes(state.status);
-    campaignProgressBar.style.display = showProgress ? 'flex' : 'none';
-    if (campaignProgressBar.style.display === 'none') campaignProgressBar.style.display = 'none';
-
-    // Reload logs
-    consoleLogs.innerHTML = '';
-    const logs = state.logs || [];
-    for (const log of logs) addLogLine(log.text, log.type, log.timestamp);
-    if (logs.length === 0) addLogLine(`[Chien dich ${id}] San sang.`, 'system');
-
-    // Render stats
-    if (state.stats) renderStats(state.stats);
-    else resetStatsDisplay();
-
-    renderCompletionReportCard(state);
-}
-
-function renderStatusPill(status) {
-    const map = {
-        waiting:   { cls: 'waiting',   label: 'Cho bat dau' },
-        running:   { cls: 'running',   label: 'Dang chay' },
-        completed: { cls: 'completed', label: 'Hoan thanh' },
-        expired:   { cls: 'expired',   label: 'Het gio' },
-        stopped:   { cls: 'stopped',   label: 'Da dung' }
-    };
-    const s = map[status] || { cls: 'stopped', label: 'Da dung' };
-    campaignStatusPill.className = `campaign-status-pill ${s.cls}`;
-    campaignStatusPill.textContent = s.label;
-}
-
-// ─── Delete Campaign ───────────────────────────────────────────────────────────
-async function deleteCampaign(id, name) {
-    if (!confirm(`Ban co chac chan muon xoa "${name}" khong?\nThao tac nay khong the hoan tac.`)) return;
-    try {
-        const res = await fetch(`/api/campaigns/${id}`, { method: 'DELETE' });
-        if (!res.ok) {
-            const d = await res.json();
-            alert('Loi xoa: ' + (d.message || 'Unknown'));
-        }
-    } catch (err) {
-        alert('Khong the ket noi may chu.');
-    }
-}
-
-// ─── Stop Campaign ─────────────────────────────────────────────────────────────
-stopBtn.addEventListener('click', async () => {
-    if (!activeCampaignId) return;
-    if (!confirm('Ban co chac chan muon dung chien dich nay?')) return;
-    try {
-        await fetch(`/api/campaigns/${activeCampaignId}/stop`, { method: 'POST' });
-    } catch (err) {
-        socket.emit('stop-campaign', { campaignId: activeCampaignId });
-    }
-});
-
-// ─── Reset Stats ───────────────────────────────────────────────────────────────
-resetStatsBtn.addEventListener('click', async () => {
-    if (!activeCampaignId) return;
-    if (!confirm(`Reset toan bo thong ke cua Chien dich ${activeCampaignId}?`)) return;
-    try {
-        await fetch(`/api/campaigns/${activeCampaignId}/reset-stats`, { method: 'POST' });
-    } catch (err) {
-        socket.emit('reset-stats', { campaignId: activeCampaignId });
-    }
-    resetStatsDisplay();
-});
-
-// ─── Logs ──────────────────────────────────────────────────────────────────────
-function addLogLine(message, type = 'info', timestamp = new Date()) {
-    if (!(timestamp instanceof Date)) timestamp = new Date(timestamp);
-    const timeStr = timestamp.toLocaleTimeString('vi-VN');
-    const div = document.createElement('div');
-    div.className = `log-line log-${type}`;
-    div.innerHTML = `<span class="log-time">[${escapeHtml(timeStr)}]</span> ${escapeHtml(message)}`;
-    consoleLogs.appendChild(div);
-    consoleLogs.scrollTop = consoleLogs.scrollHeight;
-    // Limit to 500 lines
-    while (consoleLogs.children.length > 500) consoleLogs.removeChild(consoleLogs.firstChild);
-}
-
-clearLogBtn.addEventListener('click', () => { consoleLogs.innerHTML = ''; });
-
-function renderCompletionReportCard(state) {
-    const reportCard = document.getElementById('completion-report-card');
-    if (!reportCard) return;
-
-    if (!state || !['completed', 'expired'].includes(state.status)) {
-        reportCard.style.display = 'none';
-        return;
-    }
-
-    reportCard.style.display = 'block';
-    const config = state.config || {};
-    const stats = state.stats || {};
-
-    const actualStartMs = stats.actualStartTime || config.startTime;
-    const actualEndMs = stats.actualEndTime || Date.now();
-
-    const actualStartStr = actualStartMs ? new Date(actualStartMs).toLocaleString('vi-VN') : '--';
-    const actualEndStr = actualEndMs ? new Date(actualEndMs).toLocaleString('vi-VN') : '--';
-
-    let durationStr = '--';
-    if (actualStartMs && actualEndMs && actualEndMs >= actualStartMs) {
-        const diffMs = actualEndMs - actualStartMs;
-        durationStr = window.TimeDistribution ? window.TimeDistribution.formatDuration(diffMs) : `${Math.round(diffMs/60000)} phút`;
-    }
-
-    const startEl = document.getElementById('report-actual-start');
-    const endEl = document.getElementById('report-actual-end');
-    const durEl = document.getElementById('report-total-duration');
-    const sumEl = document.getElementById('report-click-summary');
-    const downloadBtn = document.getElementById('download-completion-report-btn');
-
-    if (startEl) startEl.textContent = actualStartStr;
-    if (endEl) endEl.textContent = actualEndStr;
-    if (durEl) durEl.textContent = durationStr;
-    if (sumEl) sumEl.textContent = `${stats.success || 0} / ${config.targetClicks || 0} luot (Thanh cong: ${stats.success || 0}, That bai: ${stats.failed || 0})`;
-
-    if (downloadBtn) {
-        downloadBtn.onclick = () => downloadReportForCampaign(activeCampaignId);
-    }
-}
-
-// ─── Stats rendering ───────────────────────────────────────────────────────────
-function renderStats(data) {
-    statTotalClicks.textContent   = `${data.success} / ${data.target || '--'}`;
-    statSuccessClicks.textContent = data.success;
-    statFailedClicks.textContent  = data.failed;
-    statIps.textContent           = `${data.uniqueIps} / ${data.dupIps}`;
-
-    if (data.target > 0) {
-        const pct = Math.min(100, Math.round((data.success / data.target) * 100));
-        progressPercent.textContent  = `${pct}%`;
-        progressBarFill.style.width  = `${pct}%`;
-        campaignProgressBar.style.display = 'flex';
-    }
-
-    if (data.etaStr) statEtaTime.textContent = data.etaStr;
-    if (data.timeRemainingStr) statTimeRemaining.textContent = data.timeRemainingStr;
-
-    const state = campaignStates.get(activeCampaignId);
-    if (state) renderCompletionReportCard(state);
-}
-
-function resetStatsDisplay() {
-    statTotalClicks.textContent   = '0 / --';
-    statSuccessClicks.textContent = '0';
-    statFailedClicks.textContent  = '0';
-    statIps.textContent           = '0 / 0';
-    progressBarFill.style.width   = '0%';
-    progressPercent.textContent   = '0%';
-    statEtaTime.textContent       = '--:--';
-    statTimeRemaining.textContent = '--';
-    const reportCard = document.getElementById('completion-report-card');
-    if (reportCard) reportCard.style.display = 'none';
-}
-
-// ─── Export Logs ───────────────────────────────────────────────────────────────
-exportLogBtn.addEventListener('click', () => {
-    const logLines = Array.from(consoleLogs.querySelectorAll('.log-line')).map(l => l.textContent).join('\n');
-    if (!logLines) { alert('Log trong.'); return; }
-    const blob = new Blob([logLines], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const now = new Date();
-    a.download = `logs_CD${activeCampaignId}_${now.toISOString().slice(0,10)}.txt`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-});
-
-// ─── Export Stats Report ───────────────────────────────────────────────────────
-function downloadReportForCampaign(id) {
-    const state = campaignStates.get(id);
-    if (!state) return;
-    const stats = state.stats || {};
-    const config = state.config || {};
-
-    const schedStartStr = (config.startTimeStr || '').replace('T', ' ');
-    const schedEndStr = (config.endTimeStr || '').replace('T', ' ');
-
-    const actualStartMs = stats.actualStartTime || config.startTime;
-    const actualEndMs = stats.actualEndTime || Date.now();
-
-    const actualStartStr = actualStartMs ? new Date(actualStartMs).toLocaleString('vi-VN') : 'N/A';
-    const actualEndStr = actualEndMs ? new Date(actualEndMs).toLocaleString('vi-VN') : 'N/A';
-
-    let durationStr = 'N/A';
-    if (actualStartMs && actualEndMs && actualEndMs >= actualStartMs) {
-        const diffMs = actualEndMs - actualStartMs;
-        durationStr = window.TimeDistribution ? window.TimeDistribution.formatDuration(diffMs) : `${Math.round(diffMs/60000)} phút`;
-    }
-
-    const modeMap = {
-        'smart': '🧠 Thong minh theo gio (Smart)',
-        'even': '⚖️ Dong deu (Even)',
-        'custom': '⚙️ Tuy chinh (Custom)'
-    };
-
-    let report = `==================================================\n`;
-    report += `  BAO CAO KET QUA CHIEN DICH CLICK LINK\n`;
-    report += `==================================================\n`;
-    report += `Thoi gian xuat bao cao: ${new Date().toLocaleString('vi-VN')}\n\n`;
-    report += `1. THONG TIN CHIEN DICH:\n`;
-    report += `   - Ten chien dich : ${config.name || `Chien dich ${id}`}\n`;
-    report += `   - URL Dich        : ${config.targetUrl || 'N/A'}\n`;
-    report += `   - Che do phan bo : ${modeMap[config.scheduleMode] || config.scheduleMode || 'Smart'}\n`;
-    report += `   - Chi tieu        : ${config.targetClicks || 0} luot\n\n`;
-    report += `2. THOI GIAN THUC THI:\n`;
-    report += `   - Hen gio Bat dau : ${schedStartStr || 'N/A'}\n`;
-    report += `   - Hen gio Ket thuc: ${schedEndStr || 'N/A'}\n`;
-    report += `   - Bat dau thuc te : ${actualStartStr}\n`;
-    report += `   - Ket thuc thuc te: ${actualEndStr}\n`;
-    report += `   - Tong thoi gian  : ${durationStr}\n\n`;
-    report += `3. KET QUA TRUY CAP:\n`;
-    report += `   - Trang thai      : ${state.status.toUpperCase()}\n`;
-    report += `   - Thanh cong      : ${stats.success || 0} luot\n`;
-    report += `   - That bai        : ${stats.failed || 0} luot\n`;
-    report += `   - IP Duy nhat     : ${stats.uniqueIps || 0}\n`;
-    report += `   - IP Trung lap    : ${stats.dupIps || 0}\n`;
-    report += `   - Ty le hoan thanh: ${config.targetClicks ? Math.min(100, Math.round(((stats.success || 0) / config.targetClicks) * 100)) : 0}%\n`;
-    report += `==================================================\n`;
-
-    const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `BaoCao_ChienDich_${id}_${new Date().toISOString().slice(0,10)}.txt`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-}
-
-exportStatsBtn.addEventListener('click', () => {
-    if (activeCampaignId) downloadReportForCampaign(activeCampaignId);
-});
-
-// ─── Socket events ─────────────────────────────────────────────────────────────
-
-socket.on('user-info', (data) => {
-    if (data && data.role) {
-        applyRoleUI(data.role, data.username);
-    }
-});
-
-fetch('/api/me').then(r => r.json()).then(d => {
-    if (d && d.success && d.role) {
-        applyRoleUI(d.role, d.username);
-    }
-}).catch(() => {});
-
-socket.on('proxy-config', (data) => {
-    if (!data) return;
-    proxyRegionSelect.value = data.region || 'random';
-    proxyKeysTextarea.value = (data.keys || []).join('\n');
-    updateProxyPoolDisplay(Number.isFinite(Number(data.keyCount)) ? Number(data.keyCount) : (data.keys || []).length);
-    const cooldownEl = document.getElementById('proxy-cooldown');
-    if (cooldownEl && data.cooldownSec !== undefined) cooldownEl.value = data.cooldownSec;
-});
-
-socket.on('campaigns-list', (list) => {
-    // Update local state map
-    for (const c of list) {
-        if (!campaignStates.has(c.id)) {
-            campaignStates.set(c.id, { status: c.status, config: c.config || {}, stats: null, logs: [] });
-        } else {
-            const s = campaignStates.get(c.id);
-            s.status = c.status;
-            if (c.config) s.config = c.config;
-        }
-    }
-
-    // Remove deleted campaigns
-    const serverIds = new Set(list.map(c => c.id));
-    for (const id of campaignStates.keys()) {
-        if (!serverIds.has(id)) campaignStates.delete(id);
-    }
-
-    renderCampaignTabs(list);
-
-    // Refresh active campaign info panel with latest config
-    if (activeCampaignId && campaignStates.has(activeCampaignId)) {
-        const state = campaignStates.get(activeCampaignId);
-        if (state.config && state.config.targetUrl) {
-            updateInfoPanel(state.config);
-        }
-    }
-});
-
-socket.on('campaign-deleted', (data) => {
-    const { campaignId } = data;
-    campaignStates.delete(campaignId);
-
-    // Remove tab
-    const tab = tabsArea.querySelector(`.tab-btn[data-campaign-id="${campaignId}"]`);
-    if (tab) tab.remove();
-
-    // If this was active, switch to another
-    if (activeCampaignId === campaignId) {
-        activeCampaignId = null;
-        const remaining = Array.from(campaignStates.keys());
-        if (remaining.length > 0) {
-            switchCampaign(remaining[0]);
-        } else {
-            emptyCampaignsState.style.display = 'block';
-            campaignPanelsContainer.style.display = 'none';
-        }
-    }
-});
-
-socket.on('status-update', (data) => {
-    const { campaignId, status, isRunning } = data;
-
-    let state = campaignStates.get(campaignId);
-    if (!state) {
-        state = { status, config: {}, stats: null, logs: [] };
-        campaignStates.set(campaignId, state);
-    }
-    state.status = status;
-
-    updateTabStatus(campaignId, status);
-
-    if (campaignId === activeCampaignId) {
-        renderStatusPill(status);
-        const isActive = ['running', 'waiting'].includes(status);
-        stopBtn.disabled = !isActive;
-    }
-});
-
-socket.on('log', (data) => {
-    const { campaignId, text, type } = data;
-    let state = campaignStates.get(campaignId);
-    if (!state) { state = { status: 'stopped', config: {}, stats: null, logs: [] }; campaignStates.set(campaignId, state); }
-    const logItem = { text, type, timestamp: new Date() };
-    state.logs.push(logItem);
-    if (state.logs.length > 500) state.logs.shift();
-
-    if (campaignId === activeCampaignId) {
-        addLogLine(text, type, logItem.timestamp);
-    }
-});
-
-socket.on('stats-update', (data) => {
-    const { campaignId } = data;
-    let state = campaignStates.get(campaignId);
-    if (!state) { state = { status: 'stopped', config: {}, stats: null, logs: [] }; campaignStates.set(campaignId, state); }
-    state.stats = data;
-    if (campaignId === activeCampaignId) {
-        renderStats(data);
-    }
-});
-
-socket.on('disconnect', async (reason) => {
-    if (reason === 'io server disconnect') {
-        try {
-            const res = await fetch('/api/auth-check');
-            if (!res.ok) window.location.href = '/login.html';
-        } catch (e) {}
-    }
-});
-
-// ─── Logout ────────────────────────────────────────────────────────────────────
-const logoutBtn = document.getElementById('logout-btn');
-if (logoutBtn) {
-    logoutBtn.addEventListener('click', async () => {
-        if (confirm('Ban co chac chan muon dang xuat?')) {
-            try {
-                await fetch('/api/logout', { method: 'POST' });
-                window.location.href = '/login.html';
-            } catch (err) { window.location.href = '/login.html'; }
-        }
-    });
-}
-
-// ─── Change Password ───────────────────────────────────────────────────────────
-const changePasswordForm = document.getElementById('change-password-form');
-const changePassBtn = document.getElementById('change-pass-btn');
-if (changePasswordForm) {
-    changePasswordForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const newUsername = document.getElementById('new-username').value.trim();
-        const currentPassword = document.getElementById('current-password').value;
-        const newPassword = document.getElementById('new-password').value;
-        changePassBtn.disabled = true;
-        changePassBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Dang cap nhat...';
-        try {
-            const res = await fetch('/api/change-password', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ newUsername, currentPassword, newPassword })
+                <div class="campaign-meta-row">
+                    <div class="meta-time">
+                        <i class="fa-regular fa-clock"></i>
+                        <span id="meta-time-left-${c.id}">Đang tính...</span>
+                    </div>
+                    <div class="meta-pace" id="meta-pace-${c.id}">
+                        Nhịp độ: -- req/h
+                    </div>
+                </div>
+
+                <div class="campaign-actions-row">
+                    ${c.status === 'running'
+                        ? `<button class="btn btn-sm btn-warning btn-pause" data-id="${c.id}"><i class="fa-solid fa-pause"></i> Tạm dừng</button>`
+                        : `<button class="btn btn-sm btn-success btn-start" data-id="${c.id}"><i class="fa-solid fa-play"></i> Bắt đầu</button>`
+                    }
+                    <button class="btn btn-sm btn-secondary btn-reset" data-id="${c.id}"><i class="fa-solid fa-rotate-left"></i> Reset</button>
+                    <button class="btn btn-sm btn-secondary btn-chart" data-id="${c.id}"><i class="fa-solid fa-chart-simple"></i> Biểu đồ</button>
+                    <button class="btn btn-sm btn-secondary btn-edit" data-id="${c.id}"><i class="fa-solid fa-pen"></i> Sửa</button>
+                    <button class="btn btn-sm btn-danger btn-delete" data-id="${c.id}"><i class="fa-solid fa-trash"></i></button>
+                </div>
+            `;
+
+            // Click card to select
+            card.addEventListener('click', (e) => {
+                if (e.target.closest('button')) return;
+                selectCampaignForChart(c.id);
             });
-            const data = await res.json();
-            if (res.ok && data.success) { alert('Cap nhat thanh cong!'); changePasswordForm.reset(); }
-            else alert('Loi: ' + (data.message || 'Khong the doi mat khau.'));
-        } catch (err) { alert('Khong the ket noi may chu.'); }
-        finally {
-            changePassBtn.disabled = false;
-            changePassBtn.innerHTML = '<i class="fa-solid fa-key"></i> Cap nhat thong tin';
-        }
-    });
-}
 
-// ─── Apply suggested cooldown helper ─────────────────────────────────────────
-window.applySuggestedCooldown = function(sec) {
-    const advDetails = document.querySelector('#modal details') || document.querySelector('details');
-    if (advDetails) advDetails.open = true;
-    const cooldownInput = document.getElementById('new-cooldown');
-    if (cooldownInput) {
-        cooldownInput.value = sec;
-        cooldownInput.focus();
-        updateHourlyPreview();
+            campaignsContainer.appendChild(card);
+        });
+
+        attachCardActionListeners();
     }
-};
+
+    // ─── Attach Card Button Events ────────────────────────────────────────────────
+    function attachCardActionListeners() {
+        document.querySelectorAll('.btn-start').forEach(btn => {
+            btn.onclick = async () => {
+                const id = btn.dataset.id;
+                try {
+                    const res = await fetch(`/api/campaigns/${id}/start`, { method: 'POST' });
+                    const d = await res.json();
+                    if (d.success) showToast(`Đã khởi động chiến dịch ${id}`, 'success');
+                    else showToast(d.message, 'error');
+                } catch (e) { showToast('Lỗi gửi lệnh bắt đầu', 'error'); }
+            };
+        });
+
+        document.querySelectorAll('.btn-pause').forEach(btn => {
+            btn.onclick = async () => {
+                const id = btn.dataset.id;
+                try {
+                    const res = await fetch(`/api/campaigns/${id}/pause`, { method: 'POST' });
+                    const d = await res.json();
+                    if (d.success) showToast(`Đã tạm dừng chiến dịch ${id}`, 'info');
+                } catch (e) { showToast('Lỗi gửi lệnh tạm dừng', 'error'); }
+            };
+        });
+
+        document.querySelectorAll('.btn-reset').forEach(btn => {
+            btn.onclick = async () => {
+                const id = btn.dataset.id;
+                if (!confirm(`Bạn có chắc muốn reset lại số liệu chiến dịch ${id}?`)) return;
+                try {
+                    const res = await fetch(`/api/campaigns/${id}/reset`, { method: 'POST' });
+                    const d = await res.json();
+                    if (d.success) showToast(`Đã reset tiến trình chiến dịch ${id}`, 'success');
+                } catch (e) { showToast('Lỗi reset', 'error'); }
+            };
+        });
+
+        document.querySelectorAll('.btn-chart').forEach(btn => {
+            btn.onclick = () => {
+                selectCampaignForChart(btn.dataset.id);
+                // Switch to chart tab
+                document.querySelector('.monitor-tab-btn[data-tab="tabChart"]').click();
+            };
+        });
+
+        document.querySelectorAll('.btn-edit').forEach(btn => {
+            btn.onclick = () => {
+                openEditModal(btn.dataset.id);
+            };
+        });
+
+        document.querySelectorAll('.btn-delete').forEach(btn => {
+            btn.onclick = async () => {
+                const id = btn.dataset.id;
+                if (!confirm(`Xóa hẳn chiến dịch ${id}? Thao tác này không thể hoàn tác.`)) return;
+                try {
+                    const res = await fetch(`/api/campaigns/${id}`, { method: 'DELETE' });
+                    const d = await res.json();
+                    if (d.success) showToast(`Đã xóa chiến dịch ${id}`, 'info');
+                } catch (e) { showToast('Lỗi xóa chiến dịch', 'error'); }
+            };
+        });
+    }
+
+    // ─── Real-time Stats Card Update ──────────────────────────────────────────────
+    function updateCampaignCardStats(stats) {
+        const id = stats.campaignId;
+        const progCount = document.getElementById(`prog-count-${id}`);
+        const progPct = document.getElementById(`prog-pct-${id}`);
+        const progBar = document.getElementById(`prog-bar-${id}`);
+        const statSucc = document.getElementById(`stat-succ-${id}`);
+        const statFail = document.getElementById(`stat-fail-${id}`);
+        const statRem = document.getElementById(`stat-rem-${id}`);
+        const statWorkers = document.getElementById(`stat-workers-${id}`);
+        const metaTime = document.getElementById(`meta-time-left-${id}`);
+        const metaPace = document.getElementById(`meta-pace-${id}`);
+
+        if (progCount) progCount.textContent = `${stats.success} / ${stats.target}`;
+        if (progPct) progPct.textContent = `${stats.progressPercent}%`;
+        if (progBar) progBar.style.width = `${stats.progressPercent}%`;
+        if (statSucc) statSucc.textContent = stats.success;
+        if (statFail) statFail.textContent = stats.failed;
+        if (statRem) statRem.textContent = stats.remaining;
+        if (statWorkers) statWorkers.textContent = `${stats.activeWorkers} / ${stats.maxConcurrent}`;
+
+        if (metaTime) {
+            metaTime.textContent = stats.status === 'running'
+                ? `Còn lại: ${stats.timeRemainingStr} (Dự kiến: ${stats.etaStr})`
+                : (stats.status === 'completed' ? 'Đã hoàn thành' : stats.status);
+        }
+
+        if (metaPace) {
+            if (stats.nextIntervalSec > 0) {
+                metaPace.textContent = `~${stats.nextIntervalSec}s/req (${stats.currentRatePerHour} req/h)`;
+            } else {
+                metaPace.textContent = `Tốc độ: ${stats.currentRatePerHour} req/h`;
+            }
+        }
+
+        if (stats.avgLatencyMs > 0) {
+            globalAvgLatency.textContent = `${stats.avgLatencyMs} ms`;
+        }
+
+        // Update local object
+        const c = campaigns.find(item => item.id == id);
+        if (c) {
+            c.successRequests = stats.success;
+            c.failedRequests = stats.failed;
+            c.remaining = stats.remaining;
+            c.progressPercent = stats.progressPercent;
+            c.status = stats.status;
+        }
+    }
+
+    // ─── Real-time Log Stream ─────────────────────────────────────────────────────
+    function appendLogEntry(log) {
+        if (!consoleLogs) return;
+
+        const empty = consoleLogs.querySelector('.console-empty');
+        if (empty) empty.remove();
+
+        const row = document.createElement('div');
+        row.className = `log-entry log-${log.type || 'info'}`;
+        row.innerHTML = `
+            <span class="log-time">[${log.timestamp || new Date().toLocaleTimeString('vi-VN')}]</span>
+            <span class="log-cid">[C${log.campaignId}]</span>
+            <span class="log-msg">${escapeHtml(log.text)}</span>
+        `;
+
+        consoleLogs.appendChild(row);
+
+        // Keep maximum 300 logs
+        while (consoleLogs.children.length > 300) {
+            consoleLogs.removeChild(consoleLogs.firstChild);
+        }
+
+        if (autoScrollLogs) {
+            consoleLogs.scrollTop = consoleLogs.scrollHeight;
+        }
+    }
+
+    if (btnClearLogs) {
+        btnClearLogs.onclick = () => {
+            consoleLogs.innerHTML = '<div class="console-empty">Logs đã được xóa sạch.</div>';
+        };
+    }
+
+    // ─── Distribution Chart & Visualizer ──────────────────────────────────────────
+    function selectCampaignForChart(campaignId) {
+        selectedCampaignId = campaignId;
+
+        // Highlight selected card
+        document.querySelectorAll('.campaign-card').forEach(card => card.classList.remove('selected'));
+        const selectedCard = document.getElementById(`card-c-${campaignId}`);
+        if (selectedCard) selectedCard.classList.add('selected');
+
+        const c = campaigns.find(item => item.id == campaignId);
+        if (!c) return;
+
+        chartCampaignTitle.textContent = `${c.name} - Phân bổ ${c.scheduleMode.toUpperCase()}`;
+        chartCampaignSubtitle.textContent = `Tổng ${c.targetRequests} requests • ${new Date(c.startTime).toLocaleString('vi-VN')} → ${new Date(c.endTime).toLocaleString('vi-VN')}`;
+
+        renderDistributionChart({
+            startTime: c.startTime,
+            endTime: c.endTime,
+            targetRequests: c.targetRequests,
+            mode: c.scheduleMode,
+            timezoneOffsetMinutes: c.config.timezoneOffsetMinutes || (new Date().getTimezoneOffset())
+        });
+    }
+
+    function renderDistributionChart(params) {
+        if (!window.buildTimeDistribution) return;
+
+        const dist = window.buildTimeDistribution({
+            startTime: params.startTime,
+            endTime: params.endTime,
+            targetClicks: params.targetRequests,
+            mode: params.mode,
+            timezoneOffsetMinutes: params.timezoneOffsetMinutes
+        });
+
+        if (!dist.valid || dist.slices.length === 0) {
+            chartBarsWrap.innerHTML = '<div class="text-muted" style="margin:auto;">Không thể tính toán khoảng thời gian</div>';
+            chartSummaryBlocks.innerHTML = '';
+            return;
+        }
+
+        // Render summary blocks
+        chartSummaryBlocks.innerHTML = '';
+        dist.summaryBlocks.forEach(b => {
+            const chip = document.createElement('div');
+            chip.className = 'summary-chip';
+            chip.style.background = `${b.color}20`;
+            chip.style.border = `1px solid ${b.color}50`;
+            chip.style.color = b.color;
+            chip.innerHTML = `<span>${b.label}</span> <b>${b.quota} reqs (${b.percent}%)</b>`;
+            chartSummaryBlocks.appendChild(chip);
+        });
+
+        // Render Bars
+        chartBarsWrap.innerHTML = '';
+        const maxQuota = Math.max(...dist.slices.map(s => s.quota), 1);
+
+        dist.slices.forEach(s => {
+            const col = document.createElement('div');
+            col.className = 'chart-col';
+
+            const heightPct = Math.max(4, Math.round((s.quota / maxQuota) * 100));
+
+            col.innerHTML = `
+                <div class="chart-bar" style="height: ${heightPct}%;" title="${s.startStr} - ${s.endStr}: ${s.quota} reqs (${s.percent}%)">
+                    <span class="chart-bar-val">${s.quota}</span>
+                </div>
+                <span class="chart-hour-label">${s.startStr}</span>
+            `;
+
+            chartBarsWrap.appendChild(col);
+        });
+    }
+
+    // ─── Modal & Form Management ──────────────────────────────────────────────────
+    function openCreateModal() {
+        modalTitle.innerHTML = '<i class="fa-solid fa-sliders"></i> Tạo chiến dịch mới';
+        editCampaignId.value = '';
+        inputName.value = `Test ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`;
+        inputTargetUrl.value = 'https://uanbidvak.com';
+        inputTargetRequests.value = 750;
+        inputMaxConcurrent.value = 3;
+        inputTimeoutMs.value = 8000;
+        pingResult.innerHTML = '';
+
+        // Default 6 hours duration
+        const now = new Date();
+        const end = new Date(now.getTime() + 6 * 3600000);
+        inputStartTime.value = formatDateTimeLocal(now);
+        inputEndTime.value = formatDateTimeLocal(end);
+
+        document.querySelector('input[name="scheduleMode"][value="smart"]').checked = true;
+        updateModeDesc();
+        updateModalPreview();
+
+        campaignModal.classList.add('active');
+    }
+
+    function openEditModal(campaignId) {
+        const c = campaigns.find(item => item.id == campaignId);
+        if (!c) return;
+
+        modalTitle.innerHTML = `<i class="fa-solid fa-pen-to-square"></i> Chỉnh sửa chiến dịch ${campaignId}`;
+        editCampaignId.value = campaignId;
+        inputName.value = c.name;
+        inputTargetUrl.value = c.targetUrl;
+        inputTargetRequests.value = c.targetRequests;
+        inputMaxConcurrent.value = c.maxConcurrent || 3;
+        inputTimeoutMs.value = c.timeoutMs || 8000;
+        pingResult.innerHTML = '';
+
+        inputStartTime.value = formatDateTimeLocal(new Date(c.startTime));
+        inputEndTime.value = formatDateTimeLocal(new Date(c.endTime));
+
+        const modeRadio = document.querySelector(`input[name="scheduleMode"][value="${c.scheduleMode}"]`);
+        if (modeRadio) modeRadio.checked = true;
+
+        updateModeDesc();
+        updateModalPreview();
+
+        campaignModal.classList.add('active');
+    }
+
+    function closeModal() {
+        campaignModal.classList.remove('active');
+    }
+
+    if (btnOpenCreateModal) btnOpenCreateModal.onclick = openCreateModal;
+    if (btnEmptyCreate) btnEmptyCreate.onclick = openCreateModal;
+    if (btnCloseModal) btnCloseModal.onclick = closeModal;
+    if (btnCancelModal) btnCancelModal.onclick = closeModal;
+
+    // Mode description update
+    function updateModeDesc() {
+        const mode = document.querySelector('input[name="scheduleMode"]:checked')?.value || 'smart';
+        if (mode === 'smart') {
+            modeDescText.textContent = 'SMART: Ít lúc sáng sớm → Tăng dần → Cao điểm trưa & chiều → Tự động tính toán lại nhịp nếu server bị lag (Adaptive Pacing).';
+        } else {
+            modeDescText.textContent = 'EVEN: Chia đều số requests suốt toàn bộ khoảng thời gian, giữ khoảng cách các requests ổn định.';
+        }
+        updateModalPreview();
+    }
+
+    document.querySelectorAll('input[name="scheduleMode"]').forEach(r => {
+        r.addEventListener('change', updateModeDesc);
+    });
+
+    // Preset Durations
+    document.querySelectorAll('.btn-preset').forEach(btn => {
+        btn.onclick = () => {
+            const hours = parseFloat(btn.dataset.hours);
+            const start = new Date(inputStartTime.value || Date.now());
+            const end = new Date(start.getTime() + hours * 3600000);
+            inputEndTime.value = formatDateTimeLocal(end);
+            updateModalPreview();
+        };
+    });
+
+    // Form inputs change triggers live preview
+    [inputStartTime, inputEndTime, inputTargetRequests].forEach(input => {
+        input.addEventListener('input', updateModalPreview);
+    });
+
+    function updateModalPreview() {
+        if (!window.buildTimeDistribution) return;
+
+        const start = new Date(inputStartTime.value).getTime();
+        const end = new Date(inputEndTime.value).getTime();
+        const count = parseInt(inputTargetRequests.value, 10) || 0;
+        const mode = document.querySelector('input[name="scheduleMode"]:checked')?.value || 'smart';
+
+        if (isNaN(start) || isNaN(end) || end <= start || count <= 0) {
+            previewDurationBadge.textContent = '0 giờ';
+            modalPreviewBars.innerHTML = '';
+            return;
+        }
+
+        const dist = window.buildTimeDistribution({
+            startTime: start,
+            endTime: end,
+            targetClicks: count,
+            mode,
+            timezoneOffsetMinutes: new Date().getTimezoneOffset()
+        });
+
+        previewDurationBadge.textContent = dist.durationFormatted;
+        modalPreviewBars.innerHTML = '';
+
+        if (!dist.valid || dist.slices.length === 0) return;
+
+        const maxQ = Math.max(...dist.slices.map(s => s.quota), 1);
+        dist.slices.forEach(s => {
+            const col = document.createElement('div');
+            col.className = 'preview-col';
+            const h = Math.max(4, Math.round((s.quota / maxQ) * 100));
+            col.innerHTML = `<div class="preview-bar" style="height: ${h}%;" title="${s.startStr}-${s.endStr}: ${s.quota}"></div>`;
+            modalPreviewBars.appendChild(col);
+        });
+    }
+
+    // ─── Test URL Ping ────────────────────────────────────────────────────────────
+    if (btnTestUrl) {
+        btnTestUrl.onclick = async () => {
+            const url = inputTargetUrl.value.trim();
+            if (!url) {
+                pingResult.className = 'ping-result error';
+                pingResult.textContent = 'Vui lòng nhập URL hợp lệ trước';
+                return;
+            }
+
+            btnTestUrl.disabled = true;
+            btnTestUrl.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Đang test...';
+            pingResult.className = 'ping-result';
+            pingResult.textContent = 'Đang kiểm tra kết nối...';
+
+            try {
+                const res = await fetch('/api/test-url', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, timeoutMs: 6000 })
+                });
+                const d = await res.json();
+
+                if (d.success) {
+                    pingResult.className = 'ping-result success';
+                    pingResult.innerHTML = `<i class="fa-solid fa-circle-check"></i> Kết nối thành công (HTTP ${d.statusCode}, ${d.latencyMs}ms)`;
+                } else {
+                    pingResult.className = 'ping-result error';
+                    pingResult.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> Không kết nối được: ${d.error || `HTTP ${d.statusCode}`} (${d.latencyMs}ms)`;
+                }
+            } catch (err) {
+                pingResult.className = 'ping-result error';
+                pingResult.textContent = `Lỗi mạng khi test: ${err.message}`;
+            } finally {
+                btnTestUrl.disabled = false;
+                btnTestUrl.innerHTML = '<i class="fa-solid fa-plug"></i> Test Ping';
+            }
+        };
+    }
+
+    // ─── Form Submission (Create or Edit) ─────────────────────────────────────────
+    if (campaignForm) {
+        campaignForm.onsubmit = async (e) => {
+            e.preventDefault();
+
+            const startMs = new Date(inputStartTime.value).getTime();
+            const endMs = new Date(inputEndTime.value).getTime();
+
+            if (endMs <= startMs) {
+                alert('Thời điểm kết thúc phải sau thời điểm bắt đầu!');
+                return;
+            }
+
+            const payload = {
+                name: inputName.value.trim(),
+                targetUrl: inputTargetUrl.value.trim(),
+                targetRequests: parseInt(inputTargetRequests.value, 10),
+                scheduleMode: document.querySelector('input[name="scheduleMode"]:checked').value,
+                startTime: startMs,
+                endTime: endMs,
+                maxConcurrent: parseInt(inputMaxConcurrent.value, 10) || 3,
+                timeoutMs: parseInt(inputTimeoutMs.value, 10) || 8000,
+                timezoneOffsetMinutes: new Date().getTimezoneOffset()
+            };
+
+            const isEdit = Boolean(editCampaignId.value);
+            const url = isEdit ? `/api/campaigns/${editCampaignId.value}` : '/api/campaigns';
+            const method = isEdit ? 'PUT' : 'POST';
+
+            try {
+                const res = await fetch(url, {
+                    method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const d = await res.json();
+
+                if (d.success) {
+                    showToast(isEdit ? 'Đã cập nhật chiến dịch!' : 'Đã tạo chiến dịch thành công!', 'success');
+                    closeModal();
+                    loadCampaigns();
+                } else {
+                    alert(`Lỗi: ${d.message}`);
+                }
+            } catch (err) {
+                alert(`Lỗi hệ thống: ${err.message}`);
+            }
+        };
+    }
+
+    // ─── Monitor Section Tab Switching ────────────────────────────────────────────
+    document.querySelectorAll('.monitor-tab-btn').forEach(btn => {
+        btn.onclick = () => {
+            document.querySelectorAll('.monitor-tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.monitor-tab-content').forEach(c => c.classList.remove('active'));
+
+            btn.classList.add('active');
+            const target = document.getElementById(btn.dataset.tab);
+            if (target) target.classList.add('active');
+
+            if (btn.dataset.tab === 'tabChart' && selectedCampaignId) {
+                selectCampaignForChart(selectedCampaignId);
+            }
+        };
+    });
+
+    // ─── Helpers ──────────────────────────────────────────────────────────────────
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    // Initialize
+    loadCampaigns();
+});

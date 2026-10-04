@@ -1,20 +1,23 @@
 {
-  "name": "xoay-click-link",
-  "version": "1.0.0",
-  "description": "",
+  "name": "traffic-benchmark-runner",
+  "version": "2.0.0",
+  "description": "Super lightweight HTTP load test & benchmark scheduler with Even & Adaptive Smart distribution",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "test": "node test_distribution.js"
   },
-  "keywords": [],
+  "keywords": [
+    "http-benchmark",
+    "load-test",
+    "scheduler",
+    "smart-distribution"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "axios": "^1.19.0",
     "express": "^5.2.1",
-    "playwright": "^1.62.1",
     "socket.io": "^4.8.3"
   }
 }

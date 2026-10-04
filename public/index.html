@@ -3,679 +3,276 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Traffic Control System</title>
+    <title>Traffic Benchmark Runner - Siêu Nhẹ & Adaptive Pacing</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="css/style.css?v=2.0">
-    <style>
-        /* ── Extra styles for new multi-campaign layout ── */
-        .proxy-pool-section {
-            background: linear-gradient(135deg, rgba(16,185,129,0.06), rgba(5,150,105,0.03));
-            border: 1px solid rgba(16,185,129,0.25);
-            border-radius: var(--radius-lg, 16px);
-            padding: 24px 28px;
-            margin-bottom: 20px;
-        }
-        .proxy-pool-header {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 18px;
-        }
-        .proxy-pool-header i { color: #10b981; font-size: 18px; }
-        .proxy-pool-header h2 { font-size: 15px; font-weight: 700; color: #e2e8f0; }
-        .pool-status-badge {
-            margin-left: auto;
-            background: rgba(16,185,129,0.15);
-            color: #10b981;
-            border: 1px solid rgba(16,185,129,0.3);
-            border-radius: 20px;
-            padding: 3px 12px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        .proxy-pool-grid {
-            display: grid;
-            grid-template-columns: 180px 1fr;
-            gap: 16px;
-            align-items: start;
-        }
-        .proxy-keys-area { display: flex; flex-direction: column; gap: 8px; }
-        .proxy-key-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: rgba(0,0,0,0.2);
-            border: 1px solid rgba(16,185,129,0.15);
-            border-radius: 10px;
-            padding: 8px 12px;
-        }
-        .proxy-key-row .key-dot {
-            width: 8px; height: 8px;
-            border-radius: 50%;
-            background: #10b981;
-            flex-shrink: 0;
-        }
-        .proxy-key-row .key-dot.busy { background: #f59e0b; animation: pulse 1s infinite; }
-        .proxy-key-row .key-text { font-family: monospace; font-size: 12px; color: #94a3b8; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .proxy-key-row .key-status { font-size: 11px; color: #64748b; flex-shrink: 0; }
-
-        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-
-        /* Campaign tabs area */
-        .campaigns-tabs-area {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 16px;
-            overflow-x: auto;
-            padding-bottom: 4px;
-        }
-        .tab-btn {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 10px;
-            padding: 8px 16px;
-            font-size: 13px;
-            font-weight: 600;
-            color: #64748b;
-            cursor: pointer;
-            transition: all 0.2s;
-            white-space: nowrap;
-            font-family: 'Outfit', sans-serif;
-        }
-        .tab-btn:hover { border-color: rgba(99,102,241,0.3); color: #e2e8f0; }
-        .tab-btn.active { background: rgba(99,102,241,0.15); border-color: rgba(99,102,241,0.5); color: #818cf8; }
-        .tab-btn .tab-status-dot { width: 7px; height: 7px; border-radius: 50%; background: #334155; flex-shrink: 0; }
-        .tab-btn .tab-status-dot.active { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
-        .tab-btn .tab-status-dot.waiting { background: #f59e0b; }
-        .tab-btn .tab-status-dot.completed { background: #6366f1; }
-        .tab-btn .tab-status-dot.expired { background: #ef4444; }
-        .tab-btn .tab-delete {
-            margin-left: 4px;
-            width: 18px; height: 18px;
-            border-radius: 50%;
-            border: none;
-            background: rgba(239,68,68,0.15);
-            color: #ef4444;
-            font-size: 10px;
-            cursor: pointer;
-            display: flex; align-items: center; justify-content: center;
-            transition: background 0.2s;
-            flex-shrink: 0;
-        }
-        .tab-btn .tab-delete:hover { background: rgba(239,68,68,0.35); }
-        .btn-add-campaign {
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            background: rgba(99,102,241,0.12);
-            border: 1px dashed rgba(99,102,241,0.4);
-            border-radius: 10px;
-            padding: 8px 16px;
-            font-size: 13px;
-            font-weight: 600;
-            color: #818cf8;
-            cursor: pointer;
-            transition: all 0.2s;
-            font-family: 'Outfit', sans-serif;
-            white-space: nowrap;
-        }
-        .btn-add-campaign:hover { background: rgba(99,102,241,0.2); border-color: rgba(99,102,241,0.6); }
-
-        /* Campaign form in new style */
-        .campaign-form-panel {
-            background: rgba(15,20,40,0.7);
-            border: 1px solid rgba(99,102,241,0.15);
-            border-radius: 16px;
-            padding: 24px 28px;
-            margin-bottom: 20px;
-        }
-        .campaign-status-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px 14px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
-        }
-        .campaign-status-pill.waiting { background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
-        .campaign-status-pill.running { background: rgba(34,197,94,0.15); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
-        .campaign-status-pill.completed { background: rgba(99,102,241,0.15); color: #818cf8; border: 1px solid rgba(99,102,241,0.3); }
-        .campaign-status-pill.expired { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
-        .campaign-status-pill.stopped { background: rgba(100,116,139,0.15); color: #94a3b8; border: 1px solid rgba(100,116,139,0.3); }
-
-        /* Modal for add campaign */
-        .modal-overlay {
-            position: fixed; inset: 0;
-            background: rgba(0,0,0,0.7);
-            backdrop-filter: blur(6px);
-            z-index: 1000;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            opacity: 0; pointer-events: none;
-            transition: opacity 0.25s;
-        }
-        .modal-overlay.open { opacity: 1; pointer-events: all; }
-        .modal-card {
-            background: rgba(10,15,35,0.98);
-            border: 1px solid rgba(99,102,241,0.3);
-            border-radius: 20px;
-            padding: 36px;
-            width: 100%;
-            max-width: 560px;
-            max-height: 90vh;
-            overflow-y: auto;
-            transform: translateY(20px);
-            transition: transform 0.25s;
-            box-shadow: 0 30px 80px rgba(0,0,0,0.6);
-        }
-        .modal-overlay.open .modal-card { transform: translateY(0); }
-        .modal-header {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 24px;
-        }
-        .modal-header i { color: #818cf8; font-size: 20px; }
-        .modal-header h2 { font-size: 18px; font-weight: 700; color: #e2e8f0; flex: 1; }
-        .modal-close { background: none; border: none; color: #64748b; font-size: 20px; cursor: pointer; padding: 4px; }
-        .modal-close:hover { color: #e2e8f0; }
-
-        /* Empty state */
-        .empty-campaigns {
-            text-align: center;
-            padding: 60px 20px;
-            color: #64748b;
-        }
-        .empty-campaigns i { font-size: 48px; margin-bottom: 16px; display: block; }
-        .empty-campaigns p { font-size: 15px; margin-bottom: 20px; }
-
-        /* Compact stat row */
-        .stat-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
-        .stat-chip {
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 10px;
-            padding: 10px 16px;
-            flex: 1;
-            min-width: 100px;
-        }
-        .stat-chip .chip-label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
-        .stat-chip .chip-val { font-size: 22px; font-weight: 700; color: #e2e8f0; margin-top: 4px; }
-        .stat-chip .chip-val.green { color: #22c55e; }
-        .stat-chip .chip-val.red { color: #ef4444; }
-        .stat-chip .chip-val.blue { color: #60a5fa; }
-    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="css/style.css?v=3.0">
 </head>
 <body>
+    <!-- Background Decor -->
     <div class="background-grid"></div>
     <div class="glow-orb orb-1"></div>
     <div class="glow-orb orb-2"></div>
 
     <div class="app-container">
         <!-- Header -->
-        <header class="app-header">
-            <div class="logo-area">
-                <i class="fa-solid fa-bolt-lightning logo-icon"></i>
-                <div class="logo-text">
-                    <h1>Traffic Control System</h1>
-                    <span>N-Campaign Scheduler</span>
+        <header class="navbar">
+            <div class="brand">
+                <div class="brand-icon">
+                    <i class="fa-solid fa-bolt"></i>
+                </div>
+                <div class="brand-info">
+                    <h1>Traffic Benchmark Runner</h1>
+                    <p class="brand-tagline">Engine HTTP Keep-Alive siêu nhẹ & Adaptive Smart Pacing</p>
                 </div>
             </div>
-            <div style="display: flex; align-items: center; gap: 15px;">
-                <div id="pool-status-header" style="font-size: 12px; color: #10b981; font-weight: 600;">
-                    <i class="fa-solid fa-circle-nodes"></i> Pool: <span id="pool-key-count">0</span> keys
+
+            <div class="navbar-actions">
+                <div class="connection-status" id="wsStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-label">Kết nối Live</span>
                 </div>
-                <button type="button" class="btn-logout" id="logout-btn" title="Dang xuat">
-                    <i class="fa-solid fa-right-from-bracket"></i> Dang xuat
+                <button class="btn btn-primary" id="btnOpenCreateModal">
+                    <i class="fa-solid fa-plus"></i> Tạo chiến dịch
                 </button>
             </div>
         </header>
 
-        <main class="dashboard-layout">
-
-            <!-- ── Global Proxy Config ─────────────────────────────── -->
-            <div class="proxy-pool-section">
-                <div class="proxy-pool-header">
-                    <i class="fa-solid fa-circle-nodes"></i>
-                    <h2>Global Proxy Config</h2>
-                    <span class="pool-status-badge" id="proxy-pool-badge">
-                        <i class="fa-solid fa-key"></i> <span id="proxy-key-count-badge">0</span> key(s)
-                    </span>
+        <!-- Global Summary Metrics -->
+        <section class="overview-grid">
+            <div class="metric-card">
+                <div class="metric-icon metric-purple">
+                    <i class="fa-solid fa-layer-group"></i>
                 </div>
-                <form id="proxy-config-form">
-                    <div class="proxy-pool-grid">
-                        <div>
-                            <label style="font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: block;">
-                                <i class="fa-solid fa-earth-asia"></i> Vung Proxy
-                            </label>
-                            <select id="proxy-region" style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 10px 14px; font-size: 13px; font-family: 'Outfit', sans-serif; color: #e2e8f0; outline: none;">
-                                <option value="random">Ngau nhien (Tat ca)</option>
-                                <option value="bac">Mien Bac</option>
-                                <option value="trung">Mien Trung</option>
-                                <option value="nam">Mien Nam</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label style="font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: block;">
-                                <i class="fa-solid fa-clock"></i> Cooldown giua 2 luot (giay)
-                            </label>
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <input type="number" id="proxy-cooldown" min="0" max="300" value="30" style="width: 100px; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 10px 14px; font-size: 13px; font-family: 'Outfit', sans-serif; color: #e2e8f0; outline: none; box-sizing: border-box;">
-                                <span style="font-size: 12px; color: #64748b;">giay (0 = khong cho, 30 = mac dinh)</span>
-                            </div>
-                        </div>
-                        <div>
-                            <label style="font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: block;">
-                                <i class="fa-solid fa-key"></i> KiotProxy API Keys (moi dong 1 key)
-                            </label>
-                            <textarea id="proxy-keys-textarea" rows="3" placeholder="K412ccaa1ff63413e83...&#10;Kd7a2a3c9e9524160a...&#10;K1079e0bfc1b241ff..." style="width: 100%; background: rgba(255,255,255,0.04); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 10px 14px; font-size: 12px; font-family: monospace; color: #e2e8f0; outline: none; resize: vertical; box-sizing: border-box;"></textarea>
-                        </div>
+                <div class="metric-body">
+                    <span class="metric-label">Tổng chiến dịch</span>
+                    <span class="metric-val" id="globalTotalCampaigns">0</span>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon metric-emerald">
+                    <i class="fa-solid fa-circle-play"></i>
+                </div>
+                <div class="metric-body">
+                    <span class="metric-label">Đang chạy</span>
+                    <span class="metric-val" id="globalRunningCampaigns">0</span>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon metric-cyan">
+                    <i class="fa-solid fa-circle-check"></i>
+                </div>
+                <div class="metric-body">
+                    <span class="metric-label">Requests thành công</span>
+                    <span class="metric-val" id="globalSuccessRequests">0</span>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon metric-amber">
+                    <i class="fa-solid fa-stopwatch"></i>
+                </div>
+                <div class="metric-body">
+                    <span class="metric-label">Độ trễ trung bình</span>
+                    <span class="metric-val" id="globalAvgLatency">-- ms</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Main Workspace -->
+        <main class="main-layout">
+            <!-- Left: Campaign Management -->
+            <section class="campaigns-section">
+                <div class="section-header">
+                    <div class="section-title-wrap">
+                        <h2><i class="fa-solid fa-list-check"></i> Danh sách chiến dịch</h2>
+                        <span class="badge" id="campaignCountBadge">0 chiến dịch</span>
                     </div>
-                    <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px;">
-                        <div id="proxy-save-msg" style="font-size: 12px; color: #10b981; align-self: center; display: none;">
-                            <i class="fa-solid fa-circle-check"></i> Da luu thanh cong!
-                        </div>
-                        <button type="submit" id="save-proxy-btn" style="background: linear-gradient(135deg, #10b981, #059669); border: none; border-radius: 10px; padding: 10px 22px; font-size: 13px; font-weight: 700; color: #fff; cursor: pointer; display: flex; align-items: center; gap: 8px; font-family: 'Outfit', sans-serif; transition: opacity 0.2s;">
-                            <i class="fa-solid fa-floppy-disk"></i> Luu cau hinh Proxy
+                </div>
+
+                <div class="campaigns-list" id="campaignsContainer">
+                    <!-- Dynamic Campaign Cards rendered by JS -->
+                    <div class="empty-state" id="emptyCampaignsState">
+                        <i class="fa-solid fa-rocket"></i>
+                        <h3>Chưa có chiến dịch nào</h3>
+                        <p>Tạo chiến dịch mới để bắt đầu benchmark HTTP với thuật toán chia đều (Even) hoặc thông minh (Smart).</p>
+                        <button class="btn btn-primary" id="btnEmptyCreate">
+                            <i class="fa-solid fa-plus"></i> Tạo chiến dịch đầu tiên
                         </button>
                     </div>
-                </form>
-            </div>
+                </div>
+            </section>
 
-            <!-- ── Campaign Tabs ──────────────────────────────────── -->
-            <div class="campaigns-tabs-area" id="campaigns-tabs-area">
-                <!-- tabs rendered dynamically -->
-                <button type="button" class="btn-add-campaign" id="add-campaign-btn">
-                    <i class="fa-solid fa-plus"></i> Them chien dich
-                </button>
-            </div>
-
-            <!-- ── Campaign Detail View ───────────────────────────── -->
-            <div id="campaign-detail-view">
-                <!-- Empty state when no campaigns -->
-                <div id="empty-campaigns-state" class="empty-campaigns">
-                    <i class="fa-solid fa-folder-open"></i>
-                    <p>Chua co chien dich nao. Bam <strong>+ Them chien dich</strong> de bat dau.</p>
+            <!-- Right: Real-time Monitor & Distribution Chart -->
+            <aside class="monitor-section">
+                <div class="monitor-tabs">
+                    <button class="monitor-tab-btn active" data-tab="tabLogs">
+                        <i class="fa-solid fa-terminal"></i> Nhật ký Live
+                    </button>
+                    <button class="monitor-tab-btn" data-tab="tabChart">
+                        <i class="fa-solid fa-chart-simple"></i> Biểu đồ phân bổ
+                    </button>
                 </div>
 
-                <!-- Campaign panel (hidden when no campaigns) -->
-                <div id="campaign-panels-container" style="display: none;">
-                    <!-- Stats row -->
-                    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
-                        <div style="display: flex; align-items: center; gap: 14px;">
-                            <h2 id="active-campaign-name" style="font-size: 16px; font-weight: 700; color: #e2e8f0;">Chien dich 1</h2>
-                            <span id="campaign-status-pill" class="campaign-status-pill stopped">Dang dung</span>
+                <!-- Tab 1: Live Logs -->
+                <div class="monitor-tab-content active" id="tabLogs">
+                    <div class="console-header">
+                        <div class="console-title">
+                            <span class="live-pulse"></span>
+                            <span>Stream HTTP Requests</span>
                         </div>
-                        <div style="display: flex; gap: 10px;">
-                            <button type="button" id="stop-btn" class="btn btn-danger" disabled style="padding: 8px 20px; font-size: 13px;">
-                                <i class="fa-solid fa-stop"></i> Dung
-                            </button>
-                            <button type="button" class="btn-clear-log" id="reset-stats-btn" style="color: #ef4444; display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; background: transparent; border: none; cursor: pointer;">
-                                <i class="fa-solid fa-rotate-left"></i> Reset
-                            </button>
-                            <button type="button" class="btn-clear-log" id="export-stats-btn" style="color: var(--primary); display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; background: transparent; border: none; cursor: pointer;">
-                                <i class="fa-solid fa-file-lines"></i> Bao cao
+                        <div class="console-actions">
+                            <button class="btn-icon" id="btnClearLogs" title="Xóa logs">
+                                <i class="fa-solid fa-trash-can"></i>
                             </button>
                         </div>
                     </div>
-
-                    <!-- Stats chips -->
-                    <div class="stat-row">
-                        <div class="stat-chip">
-                            <div class="chip-label">Tong luot click</div>
-                            <div class="chip-val" id="stat-total-clicks">0 / --</div>
-                        </div>
-                        <div class="stat-chip">
-                            <div class="chip-label">Thanh cong</div>
-                            <div class="chip-val green" id="stat-success-clicks">0</div>
-                        </div>
-                        <div class="stat-chip">
-                            <div class="chip-label">That bai</div>
-                            <div class="chip-val red" id="stat-failed-clicks">0</div>
-                        </div>
-                        <div class="stat-chip">
-                            <div class="chip-label">IP duy nhat / Trung</div>
-                            <div class="chip-val blue" id="stat-ips">0 / 0</div>
-                        </div>
+                    <div class="console-body" id="consoleLogs">
+                        <div class="console-empty">Đang chờ sự kiện requests...</div>
                     </div>
-
-                    <!-- Progress bar -->
-                    <div class="progress-container" id="campaign-progress-bar" style="display: none; margin-bottom: 16px;">
-                        <div class="progress-labels">
-                            <span>Tien do chien dich</span>
-                            <span id="progress-percent">0%</span>
-                        </div>
-                        <div class="progress-bar-bg">
-                            <div class="progress-bar-fill" style="width: 0%"></div>
-                        </div>
-                        <div style="margin-top: 6px; font-size: 12px; color: #64748b; display: flex; justify-content: space-between;">
-                            <span>ETA: <span id="stat-eta-time">--:--</span></span>
-                            <span>Con lai: <span id="stat-time-remaining">--</span></span>
-                        </div>
-                    </div>
-
-                    <!-- Top row: logs -->
-                    <section class="card console-card" style="margin-bottom: 20px;">
-                        <div class="card-header" style="justify-content: space-between; display: flex; align-items: center;">
-                            <div style="display: flex; align-items: center; gap: 12px;">
-                                <i class="fa-solid fa-terminal"></i>
-                                <h2>Nhat ky chay (Real-time Logs)</h2>
-                            </div>
-                            <div style="display: flex; gap: 14px;">
-                                <button type="button" id="export-log-btn" style="color: var(--primary); background: transparent; border: none; cursor: pointer;" title="Tai logs">
-                                    <i class="fa-solid fa-download"></i>
-                                </button>
-                                <button type="button" id="clear-log-btn" style="background: transparent; border: none; cursor: pointer; color: #64748b;" title="Xoa logs">
-                                    <i class="fa-solid fa-trash"></i>
-                                </button>
-                            </div>
-                        </div>
-                        <div class="console-body" id="console-logs" style="height: 260px;">
-                            <div class="log-line system-msg">[He thong] San sang khoi chay chien dich.</div>
-                        </div>
-                    </section>
-
-                    <!-- Campaign config info (read-only when running) -->
-                    <section class="card settings-card" style="margin-bottom: 20px;">
-                        <div class="card-header">
-                            <i class="fa-solid fa-circle-info"></i>
-                            <h2>Thong tin chien dich</h2>
-                        </div>
-                        <div id="campaign-info-content" style="padding: 8px 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px;">
-                            <div>
-                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">URL Muc tieu</div>
-                                <div id="info-url" style="font-size: 13px; color: #60a5fa; word-break: break-all;">--</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">Bat dau</div>
-                                <div id="info-start" style="font-size: 13px; color: #e2e8f0;">--</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">Ket thuc</div>
-                                <div id="info-end" style="font-size: 13px; color: #e2e8f0;">--</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">So luot</div>
-                                <div id="info-target" style="font-size: 13px; color: #e2e8f0;">--</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">Che do truy cap</div>
-                                <div id="info-browser" style="font-size: 13px; color: #e2e8f0;">--</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">Phan bo theo gio</div>
-                                <div id="info-schedule-mode" style="font-size: 13px; color: #a78bfa; font-weight: 600;">--</div>
-                            </div>
-                        </div>
-                    </section>
-
-                    <!-- Completion Report Card (Shown when campaign completed/finished) -->
-                    <section class="card completion-report-card" id="completion-report-card" style="display: none; margin-bottom: 20px; border: 1px solid rgba(16, 185, 129, 0.3); background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(5, 150, 105, 0.03));">
-                        <div class="card-header" style="justify-content: space-between; display: flex; align-items: center; border-bottom: 1px solid rgba(16, 185, 129, 0.2); padding-bottom: 10px; margin-bottom: 14px;">
-                            <div style="display: flex; align-items: center; gap: 10px; color: #10b981;">
-                                <i class="fa-solid fa-trophy" style="font-size: 18px;"></i>
-                                <h2 style="font-size: 15px; font-weight: 700; color: #10b981; margin: 0;">Báo Cáo Hoàn Thành Chiến Dịch</h2>
-                            </div>
-                            <button type="button" id="download-completion-report-btn" style="background: linear-gradient(135deg, #10b981, #059669); border: none; border-radius: 8px; padding: 8px 16px; font-size: 12.5px; font-weight: 700; color: #fff; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: 'Outfit', sans-serif;">
-                                <i class="fa-solid fa-file-arrow-down"></i> Tải Báo Cáo (.txt)
-                            </button>
-                        </div>
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; font-size: 13px;">
-                            <div>
-                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">Thời gian bắt đầu thực tế</div>
-                                <div id="report-actual-start" style="font-weight: 600; color: #60a5fa;">--</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">Thời gian kết thúc thực tế</div>
-                                <div id="report-actual-end" style="font-weight: 600; color: #34d399;">--</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">Tổng thời gian thực thi</div>
-                                <div id="report-total-duration" style="font-weight: 600; color: #f59e0b;">--</div>
-                            </div>
-                            <div>
-                                <div style="font-size: 11px; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">Kết quả Lượt Click</div>
-                                <div id="report-click-summary" style="font-weight: 600; color: #e2e8f0;">--</div>
-                            </div>
-                        </div>
-                    </section>
                 </div>
-            </div>
 
-
+                <!-- Tab 2: Distribution Chart -->
+                <div class="monitor-tab-content" id="tabChart">
+                    <div class="chart-header">
+                        <div class="chart-title-wrap">
+                            <h3 id="chartCampaignTitle">Phân bổ nhịp độ theo giờ</h3>
+                            <p class="text-muted" id="chartCampaignSubtitle">Chọn một chiến dịch để xem biểu đồ</p>
+                        </div>
+                    </div>
+                    <div class="chart-summary-blocks" id="chartSummaryBlocks">
+                        <!-- Summary tags -->
+                    </div>
+                    <div class="chart-bars-wrap" id="chartBarsWrap">
+                        <!-- Hourly Bars -->
+                    </div>
+                </div>
+            </aside>
         </main>
     </div>
 
-    <!-- ── Add Campaign Modal ─────────────────────────────────────── -->
-    <div class="modal-overlay" id="add-campaign-modal">
-        <div class="modal-card" style="max-width: 600px;">
+    <!-- Create / Edit Campaign Modal -->
+    <div class="modal-backdrop" id="campaignModal">
+        <div class="modal-card">
             <div class="modal-header">
-                <i class="fa-solid fa-plus-circle"></i>
-                <h2>Tao chien dich moi</h2>
-                <button type="button" class="modal-close" id="modal-close-btn">
-                    <i class="fa-solid fa-xmark"></i>
-                </button>
+                <h3 id="modalTitle"><i class="fa-solid fa-sliders"></i> Tạo chiến dịch mới</h3>
+                <button class="btn-close" id="btnCloseModal"><i class="fa-solid fa-xmark"></i></button>
             </div>
-            <form id="add-campaign-form">
-                <div class="form-group" style="margin-bottom: 16px;">
-                    <label style="font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: block;">
-                        <i class="fa-solid fa-tag"></i> Ten chien dich (tuy chon)
-                    </label>
-                    <input type="text" id="new-campaign-name" placeholder="Vi du: Chien dich link A" style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 12px 16px; font-size: 14px; font-family: 'Outfit', sans-serif; color: #e2e8f0; outline: none; box-sizing: border-box;">
-                </div>
-                <div class="form-group" style="margin-bottom: 16px;">
-                    <label style="font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: block;">
-                        <i class="fa-solid fa-link"></i> URL Muc tieu *
-                    </label>
-                    <input type="url" id="new-campaign-url" placeholder="https://example.com/target" required style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 12px 16px; font-size: 14px; font-family: 'Outfit', sans-serif; color: #e2e8f0; outline: none; box-sizing: border-box;">
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px;">
-                    <div>
-                        <label style="font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: block;">
-                            <i class="fa-solid fa-clock"></i> Bat dau *
-                        </label>
-                        <input type="datetime-local" id="new-campaign-start" required style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 10px 14px; font-size: 13px; font-family: 'Outfit', sans-serif; color: #e2e8f0; outline: none; box-sizing: border-box;">
-                    </div>
-                    <div>
-                        <label style="font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: block;">
-                            <i class="fa-solid fa-flag-checkered"></i> Ket thuc *
-                        </label>
-                        <input type="datetime-local" id="new-campaign-end" required style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 10px 14px; font-size: 13px; font-family: 'Outfit', sans-serif; color: #e2e8f0; outline: none; box-sizing: border-box;">
-                    </div>
-                </div>
-                <div class="form-group" style="margin-bottom: 16px;">
-                    <label style="font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: block;">
-                        <i class="fa-solid fa-bullseye"></i> Tong so luot click *
-                    </label>
-                    <input type="number" id="new-campaign-clicks" min="1" placeholder="Vi du: 1500" required style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 12px 16px; font-size: 14px; font-family: 'Outfit', sans-serif; color: #e2e8f0; outline: none; box-sizing: border-box;">
+
+            <form id="campaignForm">
+                <input type="hidden" id="editCampaignId" value="">
+
+                <div class="form-group">
+                    <label for="inputName">Tên chiến dịch</label>
+                    <input type="text" id="inputName" placeholder="VD: Test tải 07:00-13:00" required>
                 </div>
 
-                <!-- Schedule Mode Selection -->
-                <div class="form-group" style="margin-bottom: 14px;">
-                    <label style="font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: block;">
-                        <i class="fa-solid fa-chart-line"></i> Che do phan bo theo gio (Traffic Profile)
-                    </label>
-                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
-                        <label class="schedule-mode-card" id="card-mode-smart" style="cursor: pointer; background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.5); border-radius: 10px; padding: 10px 8px; text-align: center; transition: all 0.2s;">
-                            <input type="radio" name="new-schedule-mode" value="smart" checked style="display: none;">
-                            <div style="font-size: 13px; font-weight: 700; color: #818cf8; margin-bottom: 2px;">
-                                <i class="fa-solid fa-brain"></i> Thong minh
-                            </div>
-                            <div style="font-size: 10.5px; color: #94a3b8;">Hanh vi tu nhien</div>
-                        </label>
-                        <label class="schedule-mode-card" id="card-mode-even" style="cursor: pointer; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 10px 8px; text-align: center; transition: all 0.2s;">
-                            <input type="radio" name="new-schedule-mode" value="even" style="display: none;">
-                            <div style="font-size: 13px; font-weight: 700; color: #e2e8f0; margin-bottom: 2px;">
-                                <i class="fa-solid fa-scale-balanced"></i> Dong deu
-                            </div>
-                            <div style="font-size: 10.5px; color: #94a3b8;">Chia deu cac gio</div>
-                        </label>
-                        <label class="schedule-mode-card" id="card-mode-custom" style="cursor: pointer; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 10px 8px; text-align: center; transition: all 0.2s;">
-                            <input type="radio" name="new-schedule-mode" value="custom" style="display: none;">
-                            <div style="font-size: 13px; font-weight: 700; color: #e2e8f0; margin-bottom: 2px;">
-                                <i class="fa-solid fa-sliders"></i> Tuy chinh
-                            </div>
-                            <div style="font-size: 10.5px; color: #94a3b8;">Chon tung khung</div>
-                        </label>
+                <div class="form-group">
+                    <label for="inputTargetUrl">Website / API kiểm thử (URL)</label>
+                    <div class="input-with-action">
+                        <input type="url" id="inputTargetUrl" placeholder="https://your-site.example/api/test" required>
+                        <button type="button" class="btn btn-secondary" id="btnTestUrl">
+                            <i class="fa-solid fa-plug"></i> Test Ping
+                        </button>
                     </div>
+                    <div class="ping-result" id="pingResult"></div>
                 </div>
 
-                <!-- Hourly Distribution Live Preview Box (placed right below mode buttons for immediate visibility) -->
-                <div id="hourly-preview-box" style="background: rgba(15,20,40,0.85); border: 1px solid rgba(99,102,241,0.25); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; display: none;">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
-                        <span style="font-weight: 700; color: #e2e8f0; font-size: 12.5px;">
-                            <i class="fa-solid fa-chart-simple" style="color: #818cf8; margin-right: 6px;"></i>
-                            Uoc tinh phan bo luot click
-                        </span>
-                        <span id="preview-total-time" style="color: #60a5fa; font-weight: 600; font-size: 11.5px;"></span>
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label for="inputTargetRequests">Tổng số requests</label>
+                        <input type="number" id="inputTargetRequests" min="1" max="100000" value="750" required>
                     </div>
-                    <div id="preview-speed-summary" style="font-size: 12px; color: #94a3b8; margin-bottom: 10px; background: rgba(99,102,241,0.08); padding: 6px 10px; border-radius: 6px;"></div>
-                    <div id="hourly-preview-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px;">
-                        <!-- dynamic chips -->
-                    </div>
-                </div>
 
-                <!-- Custom Hourly Blocks Panel (visible only when custom selected) -->
-                <div id="custom-blocks-panel" style="display: none; background: rgba(0,0,0,0.25); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 14px; margin-bottom: 14px;">
-                    <div style="font-size: 11.5px; font-weight: 700; color: #e2e8f0; margin-bottom: 10px;">
-                        <i class="fa-solid fa-clock-rotate-left"></i> Chon muc hoat dong cho tung khung gio:
-                    </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 12px;">
-                        <div>
-                            <span style="color: #94a3b8;">🌙 00:00 - 06:00 (Dem):</span>
-                            <select id="custom-block-night" style="width: 100%; margin-top: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px 10px; color: #e2e8f0; font-size: 12px;">
-                                <option value="low" selected>Thap (It luot)</option>
-                                <option value="medium">Vua</option>
-                                <option value="high">Cao</option>
-                            </select>
-                        </div>
-                        <div>
-                            <span style="color: #94a3b8;">🌅 06:00 - 09:00 (Sang som):</span>
-                            <select id="custom-block-early" style="width: 100%; margin-top: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px 10px; color: #e2e8f0; font-size: 12px;">
-                                <option value="low">Thap</option>
-                                <option value="medium" selected>Vua</option>
-                                <option value="high">Cao</option>
-                            </select>
-                        </div>
-                        <div>
-                            <span style="color: #94a3b8;">💼 09:00 - 12:00 (Sang cao diem):</span>
-                            <select id="custom-block-morn" style="width: 100%; margin-top: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px 10px; color: #e2e8f0; font-size: 12px;">
-                                <option value="low">Thap</option>
-                                <option value="medium">Vua</option>
-                                <option value="high" selected>Cao (Nhieu luot)</option>
-                            </select>
-                        </div>
-                        <div>
-                            <span style="color: #94a3b8;">🍱 12:00 - 14:00 (Trua):</span>
-                            <select id="custom-block-noon" style="width: 100%; margin-top: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px 10px; color: #e2e8f0; font-size: 12px;">
-                                <option value="low">Thap</option>
-                                <option value="medium" selected>Vua</option>
-                                <option value="high">Cao</option>
-                            </select>
-                        </div>
-                        <div>
-                            <span style="color: #94a3b8;">📈 14:00 - 18:00 (Chieu cao diem):</span>
-                            <select id="custom-block-after" style="width: 100%; margin-top: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px 10px; color: #e2e8f0; font-size: 12px;">
-                                <option value="low">Thap</option>
-                                <option value="medium">Vua</option>
-                                <option value="high" selected>Cao (Nhieu luot)</option>
-                            </select>
-                        </div>
-                        <div>
-                            <span style="color: #94a3b8;">📱 18:00 - 22:00 (Toi cao diem):</span>
-                            <select id="custom-block-eve" style="width: 100%; margin-top: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px 10px; color: #e2e8f0; font-size: 12px;">
-                                <option value="low">Thap</option>
-                                <option value="medium">Vua</option>
-                                <option value="high" selected>Cao (Nhieu luot)</option>
-                            </select>
-                        </div>
-                        <div style="grid-column: span 2;">
-                            <span style="color: #94a3b8;">🌜 22:00 - 00:00 (Khuya):</span>
-                            <select id="custom-block-late" style="width: 100%; margin-top: 4px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 6px 10px; color: #e2e8f0; font-size: 12px;">
-                                <option value="low">Thap</option>
-                                <option value="medium" selected>Vua</option>
-                                <option value="high">Cao</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Advanced settings -->
-                <details style="margin-bottom: 18px;">
-                    <summary style="font-size: 13px; color: #64748b; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 8px;">
-                        <i class="fa-solid fa-cog"></i> Cai dat nang cao
-                    </summary>
-                    <div style="margin-top: 14px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                        <div>
-                            <label style="font-size: 11px; color: #64748b; margin-bottom: 6px; display: block;">Xem toi thieu (s)</label>
-                            <input type="number" id="new-dwell-min" min="1" value="2" style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.15); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: #e2e8f0; outline: none; box-sizing: border-box;">
-                        </div>
-                        <div>
-                            <label style="font-size: 11px; color: #64748b; margin-bottom: 6px; display: block;">Xem toi da (s)</label>
-                            <input type="number" id="new-dwell-max" min="1" value="5" style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.15); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: #e2e8f0; outline: none; box-sizing: border-box;">
-                        </div>
-                        <div>
-                            <label style="font-size: 11px; color: #64748b; margin-bottom: 6px; display: block;">Che do truy cap (VPS)</label>
-                            <select id="new-browser-mode" style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.15); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: #e2e8f0; outline: none; box-sizing: border-box; font-family: 'Outfit', sans-serif;">
-                                <option value="request">Request truc tiep (Sieu nhe)</option>
-                                <option value="headless">Chrome an (Headless)</option>
-                                <option value="headful">Chrome hien thi (Headful)</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label style="font-size: 11px; color: #64748b; margin-bottom: 6px; display: block;">Che do xoa du lieu</label>
-                            <select id="new-clean-mode" style="width: 100%; background: rgba(255,255,255,0.05); border: 1px solid rgba(99,102,241,0.15); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: #e2e8f0; outline: none; box-sizing: border-box; font-family: 'Outfit', sans-serif;">
-                                <option value="incognito">An danh (Mac dinh)</option>
-                                <option value="settings">Profile + Xoa qua Settings</option>
-                            </select>
-                        </div>
-                        <div style="grid-column: span 2;">
-                            <label style="font-size: 11px; color: #10b981; margin-bottom: 6px; display: block; font-weight: 600;">
-                                <i class="fa-solid fa-clock"></i> Cooldown rieng cho chien dich nay (giay)
+                    <div class="form-group">
+                        <label>Chế độ phân bổ</label>
+                        <div class="segmented-control">
+                            <label class="segment-opt">
+                                <input type="radio" name="scheduleMode" value="smart" checked>
+                                <span class="segment-label">
+                                    <i class="fa-solid fa-brain"></i> SMART (Nhịp điệu)
+                                </span>
                             </label>
-                            <input type="number" id="new-cooldown" min="0" max="300" placeholder="De trong = Dung Cooldown chung tu Global Proxy Config" style="width: 100%; background: rgba(16,185,129,0.05); border: 1px solid rgba(16,185,129,0.25); border-radius: 8px; padding: 8px 12px; font-size: 13px; color: #e2e8f0; outline: none; box-sizing: border-box;">
+                            <label class="segment-opt">
+                                <input type="radio" name="scheduleMode" value="even">
+                                <span class="segment-label">
+                                    <i class="fa-solid fa-scale-balanced"></i> EVEN (Chia đều)
+                                </span>
+                            </label>
                         </div>
                     </div>
-                    <div style="display: flex; gap: 20px; margin-top: 14px; flex-wrap: wrap;">
-                        <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #94a3b8; cursor: pointer;">
-                            <input type="checkbox" id="new-human-actions" checked> Mo phong cuon trang
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #94a3b8; cursor: pointer;">
-                            <input type="checkbox" id="new-random-links" checked> Click link noi bo
-                        </label>
-                        <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #94a3b8; cursor: pointer;">
-                            <input type="checkbox" id="new-dedup-ip" checked> Chong trung IP
-                        </label>
+                </div>
+
+                <div class="mode-desc-box" id="modeDescBox">
+                    <i class="fa-solid fa-circle-info"></i>
+                    <span id="modeDescText">SMART: Ít lúc sáng sớm → Tăng dần → Cao điểm trưa & chiều → Tự động tính toán lại nhịp nếu server bị lag.</span>
+                </div>
+
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label for="inputStartTime">Thời điểm bắt đầu</label>
+                        <input type="datetime-local" id="inputStartTime" required>
                     </div>
-                </details>
 
-                <div id="modal-error" style="display: none; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 14px;"></div>
+                    <div class="form-group">
+                        <label for="inputEndTime">Thời điểm kết thúc</label>
+                        <input type="datetime-local" id="inputEndTime" required>
+                    </div>
+                </div>
 
-                <div style="display: flex; gap: 12px; justify-content: flex-end;">
-                    <button type="button" id="modal-cancel-btn" style="background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 12px 22px; font-size: 14px; font-weight: 600; color: #94a3b8; cursor: pointer; font-family: 'Outfit', sans-serif;">
-                        Huy
-                    </button>
-                    <button type="submit" id="modal-submit-btn" style="background: linear-gradient(135deg, #6366f1, #4f46e5); border: none; border-radius: 10px; padding: 12px 26px; font-size: 14px; font-weight: 700; color: #fff; cursor: pointer; display: flex; align-items: center; gap: 8px; font-family: 'Outfit', sans-serif;">
-                        <i class="fa-solid fa-rocket"></i> Tao chien dich
+                <!-- Quick Preset Durations -->
+                <div class="quick-presets">
+                    <span class="quick-label">Cài nhanh:</span>
+                    <button type="button" class="btn-preset" data-hours="1">+ 1 giờ</button>
+                    <button type="button" class="btn-preset" data-hours="3">+ 3 giờ</button>
+                    <button type="button" class="btn-preset" data-hours="6" id="preset6h">+ 6 giờ (07h-13h)</button>
+                    <button type="button" class="btn-preset" data-hours="12">+ 12 giờ</button>
+                    <button type="button" class="btn-preset" data-hours="24">+ 24 giờ</button>
+                </div>
+
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label for="inputMaxConcurrent">Luồng đồng thời (Concurrency)</label>
+                        <input type="number" id="inputMaxConcurrent" min="1" max="20" value="3" required>
+                        <small class="field-hint">Số request gửi song song tối đa (Keep-Alive socket)</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="inputTimeoutMs">Timeout request (ms)</label>
+                        <input type="number" id="inputTimeoutMs" min="500" max="60000" step="500" value="8000" required>
+                        <small class="field-hint">Thời gian chờ tối đa cho mỗi HTTP request</small>
+                    </div>
+                </div>
+
+                <!-- Interactive Preview inside Modal -->
+                <div class="modal-preview-box">
+                    <div class="modal-preview-header">
+                        <span><i class="fa-solid fa-chart-column"></i> Xem trước nhịp phân bổ</span>
+                        <span class="preview-duration-badge" id="previewDurationBadge">0 giờ</span>
+                    </div>
+                    <div class="preview-bars" id="modalPreviewBars"></div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" id="btnCancelModal">Hủy bỏ</button>
+                    <button type="submit" class="btn btn-primary" id="btnSubmitModal">
+                        <i class="fa-solid fa-check"></i> Lưu chiến dịch
                     </button>
                 </div>
             </form>
         </div>
     </div>
 
+    <!-- Toast Notification Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Scripts -->
     <script src="/socket.io/socket.io.js"></script>
-    <script src="js/timeDistribution.js?v=2.0"></script>
-    <script src="js/app.js?v=2.0"></script>
+    <script src="js/timeDistribution.js?v=3.0"></script>
+    <script src="js/app.js?v=3.0"></script>
 </body>
 </html>
