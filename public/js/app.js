@@ -57,13 +57,38 @@ document.addEventListener('DOMContentLoaded', () => {
     const modalLockedBanner = document.getElementById('modalLockedBanner');
     const inputProxyEnabled = document.getElementById('inputProxyEnabled');
     const proxyFieldsWrap = document.getElementById('proxyFieldsWrap');
+    const proxyFreeWarning = document.getElementById('proxyFreeWarning');
     const inputProxyGateways = document.getElementById('inputProxyGateways');
     const inputProxyInterval = document.getElementById('inputProxyInterval');
     const execModeHint = document.getElementById('execModeHint');
 
+    // Scenario Engine Elements
+    const scenarioGroup = document.getElementById('scenarioGroup');
+    const scenarioStepsContainer = document.getElementById('scenarioStepsContainer');
+    const btnAddScenarioStep = document.getElementById('btnAddScenarioStep');
+    const screenshotModal = document.getElementById('screenshotModal');
+    const screenshotImg = document.getElementById('screenshotImg');
+    const btnCloseScreenshotModal = document.getElementById('btnCloseScreenshotModal');
+
+    let currentScenarioSteps = [
+        { action: 'waitForSelector', selector: 'body', timeout: 5000 }
+    ];
+
+    function updateProxyWarningVisibility() {
+        const mode = document.querySelector('input[name="executionMode"]:checked')?.value || 'browser';
+        const isProxy = Boolean(inputProxyEnabled && inputProxyEnabled.checked);
+        if (proxyFreeWarning) {
+            proxyFreeWarning.style.display = (mode === 'browser' && isProxy) ? 'block' : 'none';
+        }
+        if (scenarioGroup) {
+            scenarioGroup.style.display = (mode === 'browser') ? 'block' : 'none';
+        }
+    }
+
     if (inputProxyEnabled) {
         inputProxyEnabled.addEventListener('change', () => {
             if (proxyFieldsWrap) proxyFieldsWrap.style.display = inputProxyEnabled.checked ? 'block' : 'none';
+            updateProxyWarningVisibility();
         });
     }
 
@@ -75,8 +100,111 @@ document.addEventListener('DOMContentLoaded', () => {
                     ? 'Browser QA: Render DOM/JS thật bằng Browserless.io Chromium. Rất tự nhiên, lấy title và bắt chước phiên người dùng.'
                     : 'HTTP: Subrequest Cloudflare fetch() tốc độ cao, siêu nhẹ cho kiểm thử tải lớn.';
             }
+            updateProxyWarningVisibility();
         });
     });
+
+    function renderScenarioSteps() {
+        if (!scenarioStepsContainer) return;
+        scenarioStepsContainer.innerHTML = '';
+        currentScenarioSteps.forEach((step, idx) => {
+            const item = document.createElement('div');
+            item.className = 'scenario-step-item';
+            item.style.display = 'flex';
+            item.style.alignItems = 'center';
+            item.style.gap = '8px';
+            item.style.padding = '8px 12px';
+            item.style.background = 'rgba(255, 255, 255, 0.04)';
+            item.style.border = '1px solid var(--border-color)';
+            item.style.borderRadius = 'var(--radius-sm)';
+
+            let fieldsHtml = '';
+            if (step.action === 'waitForSelector') {
+                fieldsHtml = `
+                    <input type="text" class="step-selector" placeholder="CSS Selector (VD: #content, .btn-login)" value="${escapeHtml(step.selector || '')}" style="flex: 2; padding: 4px 8px; font-size: 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 4px; color: #fff;">
+                    <input type="number" class="step-timeout" placeholder="Timeout ms" value="${step.timeout || 5000}" style="width: 80px; padding: 4px 8px; font-size: 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 4px; color: #fff;">
+                `;
+            } else if (step.action === 'click') {
+                fieldsHtml = `
+                    <input type="text" class="step-selector" placeholder="Selector để Click (VD: button.submit, a.nav)" value="${escapeHtml(step.selector || '')}" style="flex: 2; padding: 4px 8px; font-size: 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 4px; color: #fff;">
+                `;
+            } else if (step.action === 'type') {
+                fieldsHtml = `
+                    <input type="text" class="step-selector" placeholder="Input Selector (VD: input#username)" value="${escapeHtml(step.selector || '')}" style="flex: 1.5; padding: 4px 8px; font-size: 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 4px; color: #fff;">
+                    <input type="text" class="step-value" placeholder="Giá trị cần nhập" value="${escapeHtml(step.value || '')}" style="flex: 1.5; padding: 4px 8px; font-size: 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 4px; color: #fff;">
+                `;
+            } else if (step.action === 'assertText') {
+                fieldsHtml = `
+                    <input type="text" class="step-selector" placeholder="Selector chứa chữ (VD: h1, .welcome-msg)" value="${escapeHtml(step.selector || '')}" style="flex: 1.5; padding: 4px 8px; font-size: 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 4px; color: #fff;">
+                    <input type="text" class="step-expected" placeholder="Nội dung mong đợi" value="${escapeHtml(step.expected || '')}" style="flex: 1.5; padding: 4px 8px; font-size: 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 4px; color: #fff;">
+                `;
+            } else if (step.action === 'wait') {
+                fieldsHtml = `
+                    <input type="number" class="step-duration" placeholder="Thời gian chờ ms (VD: 2000)" value="${step.duration || 1000}" min="100" max="10000" style="flex: 1; padding: 4px 8px; font-size: 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 4px; color: #fff;">
+                `;
+            }
+
+            item.innerHTML = `
+                <span style="font-size: 11px; opacity: 0.7; min-width: 20px;">#${idx + 1}</span>
+                <select class="step-action-select" style="padding: 4px 8px; font-size: 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 4px; color: #fff;">
+                    <option value="waitForSelector" ${step.action === 'waitForSelector' ? 'selected' : ''}>Chờ selector</option>
+                    <option value="click" ${step.action === 'click' ? 'selected' : ''}>Click selector</option>
+                    <option value="type" ${step.action === 'type' ? 'selected' : ''}>Nhập text</option>
+                    <option value="assertText" ${step.action === 'assertText' ? 'selected' : ''}>Kiểm tra text</option>
+                    <option value="wait" ${step.action === 'wait' ? 'selected' : ''}>Chờ độ trễ (delay)</option>
+                </select>
+                ${fieldsHtml}
+                <button type="button" class="btn-remove-step btn-icon" style="color: #ef4444; width: 24px; height: 24px; min-width: 24px; padding: 0;" title="Xóa bước này">
+                    <i class="fa-solid fa-trash-can" style="font-size: 12px;"></i>
+                </button>
+            `;
+
+            const selectEl = item.querySelector('.step-action-select');
+            selectEl.onchange = (e) => {
+                step.action = e.target.value;
+                renderScenarioSteps();
+            };
+
+            const selInput = item.querySelector('.step-selector');
+            if (selInput) selInput.oninput = (e) => { step.selector = e.target.value; };
+            const valInput = item.querySelector('.step-value');
+            if (valInput) valInput.oninput = (e) => { step.value = e.target.value; };
+            const expInput = item.querySelector('.step-expected');
+            if (expInput) expInput.oninput = (e) => { step.expected = e.target.value; };
+            const timeInput = item.querySelector('.step-timeout');
+            if (timeInput) timeInput.oninput = (e) => { step.timeout = parseInt(e.target.value, 10) || 5000; };
+            const durInput = item.querySelector('.step-duration');
+            if (durInput) durInput.oninput = (e) => { step.duration = parseInt(e.target.value, 10) || 1000; };
+
+            const removeBtn = item.querySelector('.btn-remove-step');
+            if (removeBtn) {
+                removeBtn.onclick = () => {
+                    currentScenarioSteps.splice(idx, 1);
+                    renderScenarioSteps();
+                };
+            }
+
+            scenarioStepsContainer.appendChild(item);
+        });
+    }
+
+    if (btnAddScenarioStep) {
+        btnAddScenarioStep.onclick = () => {
+            currentScenarioSteps.push({ action: 'waitForSelector', selector: '', timeout: 5000 });
+            renderScenarioSteps();
+        };
+    }
+
+    if (btnCloseScreenshotModal) {
+        btnCloseScreenshotModal.onclick = () => {
+            if (screenshotModal) screenshotModal.style.display = 'none';
+        };
+    }
+    if (screenshotModal) {
+        screenshotModal.onclick = (e) => {
+            if (e.target === screenshotModal) screenshotModal.style.display = 'none';
+        };
+    }
 
     // ─── Toast System ─────────────────────────────────────────────────────────────
     function showToast(message, type = 'info') {
@@ -268,6 +396,18 @@ document.addEventListener('DOMContentLoaded', () => {
             inputProxyInterval.value = c.proxyConfig?.rotationIntervalSec || 300;
         }
 
+        // Clone scenario steps if available
+        if (Array.isArray(c.scenario) && c.scenario.length > 0) {
+            currentScenarioSteps = JSON.parse(JSON.stringify(c.scenario.filter(s => s.action !== 'goto')));
+            if (currentScenarioSteps.length === 0) {
+                currentScenarioSteps = [{ action: 'waitForSelector', selector: 'body', timeout: 5000 }];
+            }
+        } else {
+            currentScenarioSteps = [{ action: 'waitForSelector', selector: 'body', timeout: 5000 }];
+        }
+        renderScenarioSteps();
+        updateProxyWarningVisibility();
+
         // Clone creates a new campaign so all fields are unlocked
         if (modalLockedBanner) modalLockedBanner.style.display = 'none';
         setFormInputsDisabled(false);
@@ -361,6 +501,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         <b class="t-val val-dispatched" id="stat-disp-${c.id}">${c.totalDispatched || 0}</b>
                     </div>
                     <div class="telemetry-item">
+                        <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg> Sequence:</span>
+                        <b class="t-val">#${c.jobSequence || 0}</b>
+                    </div>
+                    <div class="telemetry-item">
                         <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg> Thành công:</span>
                         <b class="t-val val-success" id="stat-succ-${c.id}">${c.successRequests || 0}</b>
                     </div>
@@ -372,6 +516,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> Lần chạy cuối:</span>
                         <b class="t-val" id="stat-cron-${c.id}">${c.lastAlarmRunText || c.lastCronRunText || 'Chờ đợt tới...'}</b>
                     </div>
+                    <div class="telemetry-item">
+                        <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> S2S Lag:</span>
+                        <b class="t-val ${c.schedulerLagMs > 500 ? 'val-failed' : 'val-success'}">${c.schedulerLagMs ? `+${c.schedulerLagMs}ms` : '0ms (Chuẩn)'}</b>
+                    </div>
                     <div class="telemetry-item span-full">
                         <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Kết quả cuối:</span>
                         <b class="t-val ${c.lastStatusCode && c.lastStatusCode >= 400 ? 'val-failed' : 'val-success'}" id="stat-req-${c.id}">
@@ -381,8 +529,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                     ${(isBrowser && c.lastPageTitle) ? `
                     <div class="telemetry-item span-full item-page-title">
-                        <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> DOM Page Title:</span>
+                        <span class="t-label"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> DOM Title:</span>
                         <b class="t-val" style="word-break: break-all; font-weight: 500;">"${escapeHtml(c.lastPageTitle)}"</b>
+                    </div>
+                    ` : ''}
+                    ${(isBrowser && c.lastStepLogs && c.lastStepLogs.length > 0) ? `
+                    <div class="telemetry-item span-full">
+                        <span class="t-label"><i class="fa-solid fa-list-check"></i> Kịch bản DOM:</span>
+                        <span style="font-size: 11px; color: var(--text-muted);">${c.lastStepLogs.map(s => `[#${s.step} ${s.action}: ${s.status}]`).join(' → ')}</span>
+                    </div>
+                    ` : ''}
+                    ${(isBrowser && c.lastErrorScreenshot) ? `
+                    <div class="telemetry-item span-full" style="display: flex; align-items: center; justify-content: space-between; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); border-radius: var(--radius-sm); padding: 6px 10px;">
+                        <span class="t-label" style="color: #fca5a5;"><i class="fa-solid fa-camera"></i> Sự cố Chromium được lưu:</span>
+                        <button type="button" class="btn btn-secondary btn-xs btn-view-screenshot" data-img="${c.lastErrorScreenshot}" style="font-size: 11px; padding: 2px 8px; border-color: rgba(239, 68, 68, 0.4); color: #fca5a5;">
+                            <i class="fa-solid fa-eye"></i> Xem ảnh lỗi
+                        </button>
                     </div>
                     ` : ''}
                 </div>
@@ -397,12 +559,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="stat-pill-val val-workers" id="stat-workers-${c.id}">${c.maxConcurrent || (isBrowser ? 2 : 3)} luồng</span>
                     </div>
                     <div class="stat-pill">
-                        <span class="stat-pill-label">Thời gian còn</span>
-                        <span class="stat-pill-val" id="meta-time-left-${c.id}">Đang tính...</span>
+                        <span class="stat-pill-label">Độ trễ TB</span>
+                        <span class="stat-pill-val">${c.avgLatencyMs ? `${c.avgLatencyMs}ms` : '--'}</span>
                     </div>
                     <div class="stat-pill">
-                        <span class="stat-pill-label">Nhịp độ ước tính</span>
-                        <span class="stat-pill-val" id="meta-pace-${c.id}">-- req/h</span>
+                        <span class="stat-pill-label">Thời gian còn</span>
+                        <span class="stat-pill-val" id="meta-time-left-${c.id}">Đang tính...</span>
                     </div>
                 </div>
 
@@ -544,6 +706,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         showToast(d.message || 'Không thể xóa chiến dịch', 'error');
                     }
                 } catch (e) { showToast('Lỗi xóa chiến dịch', 'error'); }
+            };
+        });
+
+        document.querySelectorAll('.btn-view-screenshot').forEach(btn => {
+            btn.onclick = (e) => {
+                e.stopPropagation();
+                if (screenshotImg && screenshotModal) {
+                    screenshotImg.src = btn.dataset.img;
+                    screenshotModal.style.display = 'flex';
+                }
             };
         });
     }
@@ -757,6 +929,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (inputProxyGateways) inputProxyGateways.value = '';
         if (inputProxyInterval) inputProxyInterval.value = 300;
 
+        currentScenarioSteps = [
+            { action: 'waitForSelector', selector: 'body', timeout: 5000 }
+        ];
+        renderScenarioSteps();
+        updateProxyWarningVisibility();
+
         updateModeDesc();
         updateModalPreview();
 
@@ -796,6 +974,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (inputProxyInterval) {
             inputProxyInterval.value = c.proxyConfig?.rotationIntervalSec || 300;
         }
+
+        if (Array.isArray(c.scenario) && c.scenario.length > 0) {
+            currentScenarioSteps = JSON.parse(JSON.stringify(c.scenario.filter(s => s.action !== 'goto')));
+            if (currentScenarioSteps.length === 0) {
+                currentScenarioSteps = [{ action: 'waitForSelector', selector: 'body', timeout: 5000 }];
+            }
+        } else {
+            currentScenarioSteps = [{ action: 'waitForSelector', selector: 'body', timeout: 5000 }];
+        }
+        renderScenarioSteps();
+        updateProxyWarningVisibility();
 
         // Configuration locking check
         if (c.hasStarted) {
@@ -958,12 +1147,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
+            const execMode = document.querySelector('input[name="executionMode"]:checked')?.value || 'browser';
+            let scenario = null;
+            if (execMode === 'browser') {
+                scenario = [
+                    { action: 'goto', url: inputTargetUrl.value.trim(), timeout: parseInt(inputTimeoutMs.value, 10) || 15000 },
+                    ...currentScenarioSteps
+                ];
+            }
+
             const payload = {
                 name: inputName.value.trim(),
                 targetUrl: inputTargetUrl.value.trim(),
                 targetRequests: parseInt(inputTargetRequests.value, 10),
                 scheduleMode: document.querySelector('input[name="scheduleMode"]:checked')?.value || 'smart',
-                executionMode: document.querySelector('input[name="executionMode"]:checked')?.value || 'browser',
+                executionMode: execMode,
+                scenario,
                 proxyConfig: {
                     enabled: Boolean(inputProxyEnabled && inputProxyEnabled.checked),
                     gateways: inputProxyGateways ? inputProxyGateways.value.split('\n').map(s => s.trim()).filter(Boolean) : [],
@@ -1113,13 +1312,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            // Browserless QA status
+            // Cloudflare Access Zero Trust status
+            const healthAccessVal = document.getElementById('healthAccessVal');
+            const healthAccessDot = document.getElementById('healthAccessDot');
+            if (healthAccessVal && healthAccessDot) {
+                if (data.accessControl && data.accessControl.authenticated) {
+                    healthAccessVal.textContent = data.accessControl.label;
+                    healthAccessDot.className = 'pulse-indicator online';
+                } else {
+                    healthAccessVal.textContent = '⚪ Public (No CF Access)';
+                    healthAccessDot.className = 'pulse-indicator idle';
+                }
+            }
+
+            // Browserless QA status & capabilities
             const healthBrowserlessVal = document.getElementById('healthBrowserlessVal');
             const healthBrowserlessDot = document.getElementById('healthBrowserlessDot');
             if (healthBrowserlessVal && healthBrowserlessDot) {
-                if (data.browserless && data.browserless.status === 'connected') {
-                    healthBrowserlessVal.textContent = '🟢 Connected (Chromium)';
-                    healthBrowserlessDot.className = 'pulse-indicator online';
+                if (data.browserless && (data.browserless.status === 'ready' || data.browserless.status === 'connected')) {
+                    healthBrowserlessVal.textContent = data.browserless.tokenConfigured
+                        ? '🟢 Ready (Stateless Chromium)'
+                        : '🟡 Thiếu Secret Token';
+                    healthBrowserlessDot.className = data.browserless.tokenConfigured ? 'pulse-indicator online' : 'pulse-indicator waiting';
                 } else {
                     healthBrowserlessVal.textContent = '⚪ Offline';
                     healthBrowserlessDot.className = 'pulse-indicator offline';

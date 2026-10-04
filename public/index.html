@@ -70,6 +70,11 @@
                 <span class="chip-label">Browserless QA:</span>
                 <span class="chip-val status-val-ok" id="healthBrowserlessVal">🟢 Connected (Chromium)</span>
             </div>
+            <div class="health-chip" id="chipAccess">
+                <span class="pulse-indicator waiting" id="healthAccessDot"></span>
+                <span class="chip-label">Access:</span>
+                <span class="chip-val" id="healthAccessVal">Checking...</span>
+            </div>
             <div class="health-chip chip-time" id="chipServerTime">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 <span class="chip-label">Giờ VN:</span>
@@ -259,6 +264,20 @@
                     <div class="ping-result" id="pingResult"></div>
                 </div>
 
+                <!-- DOM Interaction Scenario Engine for Browser Mode -->
+                <div class="form-group scenario-group" id="scenarioGroup">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <label style="margin: 0; font-weight: 600;"><i class="fa-solid fa-list-check"></i> Kịch bản tương tác DOM (Scenario Engine)</label>
+                        <button type="button" class="btn btn-secondary btn-xs" id="btnAddScenarioStep" style="padding: 3px 10px; font-size: 11px;">
+                            <i class="fa-solid fa-plus"></i> Thêm bước
+                        </button>
+                    </div>
+                    <div id="scenarioStepsContainer" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px;">
+                        <!-- Injected by JS -->
+                    </div>
+                    <small class="field-hint">Định nghĩa chuỗi hành động Puppeteer tuần tự (mở trang, chờ selector, click, nhập liệu, assert chữ). Tự động lưu ảnh chụp nếu bước bị lỗi.</small>
+                </div>
+
                 <!-- Decoupled Proxy / Gateway Manager -->
                 <div class="form-group proxy-config-group">
                     <div class="proxy-header-row">
@@ -269,6 +288,9 @@
                         <span class="badge">Decoupled Manager</span>
                     </div>
                     <div id="proxyFieldsWrap" style="display: none; margin-top: 10px;">
+                        <div class="proxy-free-warning" id="proxyFreeWarning" style="display: none; margin-bottom: 10px; padding: 8px 12px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: var(--radius-sm); font-size: 11px; color: #fbbf24; line-height: 1.5;">
+                            <i class="fa-solid fa-triangle-exclamation"></i> <strong>Lưu ý Browserless Cloud Free:</strong> External proxy bên thứ ba yêu cầu gói Paid của Browserless.io (gói Free sẽ nhận HTTP 401 Unauthorized khi chạy Chromium). Nếu bạn dùng gói Free, vui lòng chuyển Engine sang <em>⚡ HTTP Subrequest</em> hoặc bỏ chọn proxy.
+                        </div>
                         <div class="form-group" style="margin-bottom: 10px;">
                             <label for="inputProxyGateways">Danh sách Gateway Proxies (Mỗi dòng một proxy)</label>
                             <textarea id="inputProxyGateways" rows="3" placeholder="http://192.168.1.10:8080&#10;http://user:pass@10.0.0.5:3128" style="width: 100%; font-family: var(--font-mono); font-size: 12px; background: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 8px;"></textarea>
@@ -364,6 +386,20 @@
                     </button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Screenshot Modal for Browser QA Failure Inspection -->
+    <div class="modal-backdrop" id="screenshotModal" style="display: none;">
+        <div class="modal-card" style="max-width: 820px;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-camera"></i> Ảnh chụp sự cố Browser QA</h3>
+                <button class="btn-close" id="btnCloseScreenshotModal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div style="padding: 16px; text-align: center;">
+                <p id="screenshotCaption" class="text-muted" style="margin-bottom: 12px; font-size: 12px;">Ảnh màn hình Chromium tại thời điểm kịch bản gặp lỗi</p>
+                <img id="screenshotImg" src="" alt="Error Screenshot" style="max-width: 100%; max-height: 70vh; border-radius: var(--radius-sm); border: 1px solid var(--border-color); box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
+            </div>
         </div>
     </div>
 

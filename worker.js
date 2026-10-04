@@ -149,15 +149,34 @@ function buildTimeDistribution({ startTime, endTime, targetClicks, mode = 'smart
     return { valid: true, startMs, endMs, targetClicks: requests, mode, timezoneOffsetMinutes: hasTimezoneOffset(timezoneOffsetMinutes) ? Number(timezoneOffsetMinutes) : null, durationMs, durationFormatted, avgIntervalSec, slices, summaryBlocks };
 }
 
-function calculateAdaptiveNextInterval({ now = Date.now(), endTime, remainingRequests, mode = 'smart', timezoneOffsetMinutes = null }) {
+function calculateAdaptiveNextInterval({ now = Date.now(), endTime, remainingRequests, mode = 'smart', timezoneOffsetMinutes = null, avgLatencyMs = 0 }) {
     const timeRemainingMs = endTime - now;
     if (timeRemainingMs <= 0 || remainingRequests <= 0)
-        return { valid: false, timeRemainingMs: Math.max(0, timeRemainingMs), remainingRequests: Math.max(0, remainingRequests), idealIntervalMs: 0, jitteredIntervalMs: 0, currentRatePerHour: 0 };
+        return { valid: false, timeRemainingMs: Math.max(0, timeRemainingMs), remainingRequests: Math.max(0, remainingRequests), idealIntervalMs: 0, jitteredIntervalMs: 0, currentRatePerHour: 0, feasibility: 'completed' };
+
+    // Feasibility analysis: check if remaining target can physically execute before endTime
+    let feasibility = 'achievable';
+    const estimatedRequiredRunTimeMs = remainingRequests * (avgLatencyMs || 200);
+    if (estimatedRequiredRunTimeMs > timeRemainingMs) {
+        feasibility = 'lagging';
+    } else if (estimatedRequiredRunTimeMs * 1.3 > timeRemainingMs) {
+        feasibility = 'tight';
+    }
 
     if (mode === 'even') {
         const idealIntervalMs = timeRemainingMs / remainingRequests;
         const jitter = 0.92 + 0.16 * Math.random();
-        return { valid: true, timeRemainingMs, remainingRequests, idealIntervalMs: Math.round(idealIntervalMs), jitteredIntervalMs: Math.max(50, Math.round(idealIntervalMs * jitter)), currentRatePerHour: Number(((3600000 / idealIntervalMs)).toFixed(1)), quotaCurrentSlice: Math.max(1, Math.round(remainingRequests * (Math.min(3600000, timeRemainingMs) / timeRemainingMs))) };
+        return {
+            valid: true,
+            timeRemainingMs,
+            remainingRequests,
+            idealIntervalMs: Math.round(idealIntervalMs),
+            jitteredIntervalMs: Math.max(50, Math.round(idealIntervalMs * jitter)),
+            currentRatePerHour: Number(((3600000 / idealIntervalMs)).toFixed(1)),
+            quotaCurrentSlice: Math.max(1, Math.round(remainingRequests * (Math.min(3600000, timeRemainingMs) / timeRemainingMs))),
+            feasibility,
+            avgLatencyMs
+        };
     }
 
     const remainingSlices = [];
@@ -175,7 +194,17 @@ function calculateAdaptiveNextInterval({ now = Date.now(), endTime, remainingReq
     const totalRemainingWeight = remainingSlices.reduce((sum, s) => sum + s.weight, 0);
     if (totalRemainingWeight <= 0 || remainingSlices.length === 0) {
         const fallbackInterval = timeRemainingMs / remainingRequests;
-        return { valid: true, timeRemainingMs, remainingRequests, idealIntervalMs: Math.round(fallbackInterval), jitteredIntervalMs: Math.round(fallbackInterval * (0.92 + 0.16 * Math.random())), currentRatePerHour: Number(((3600000 / fallbackInterval)).toFixed(1)), quotaCurrentSlice: remainingRequests };
+        return {
+            valid: true,
+            timeRemainingMs,
+            remainingRequests,
+            idealIntervalMs: Math.round(fallbackInterval),
+            jitteredIntervalMs: Math.round(fallbackInterval * (0.92 + 0.16 * Math.random())),
+            currentRatePerHour: Number(((3600000 / fallbackInterval)).toFixed(1)),
+            quotaCurrentSlice: remainingRequests,
+            feasibility,
+            avgLatencyMs
+        };
     }
 
     const currentSlice = remainingSlices[0];
@@ -187,10 +216,22 @@ function calculateAdaptiveNextInterval({ now = Date.now(), endTime, remainingReq
     const jitteredIntervalMs = Math.max(50, Math.round(idealIntervalMs * jitter));
     const currentRatePerHour = Number(((3600000 / idealIntervalMs)).toFixed(1));
 
-    return { valid: true, timeRemainingMs, remainingRequests, idealIntervalMs: Math.round(idealIntervalMs), jitteredIntervalMs, quotaCurrentSlice: Number(currentSliceQuota.toFixed(2)), currentRatePerHour, currentHour: currentSlice.hour, currentHourWeight: currentSlice.baseW };
+    return {
+        valid: true,
+        timeRemainingMs,
+        remainingRequests,
+        idealIntervalMs: Math.round(idealIntervalMs),
+        jitteredIntervalMs,
+        quotaCurrentSlice: Number(currentSliceQuota.toFixed(2)),
+        currentRatePerHour,
+        currentHour: currentSlice.hour,
+        currentHourWeight: currentSlice.baseW,
+        feasibility,
+        avgLatencyMs
+    };
 }
 
-// ─── Utility Helpers ──────────────────────────────────────────────────────────
+// ─── Utility Helpers & Credential Sanitizer ──────────────────────────────────
 
 function formatVnTime(ms = Date.now()) {
     const d = new Date(ms + 7 * 3600000);
@@ -198,6 +239,42 @@ function formatVnTime(ms = Date.now()) {
     const mm = String(d.getUTCMinutes()).padStart(2, '0');
     const ss = String(d.getUTCSeconds()).padStart(2, '0');
     return `${hh}:${mm}:${ss}`;
+}
+
+function sanitizeProxyGateway(gw) {
+    if (!gw || typeof gw !== 'string') return '';
+    try {
+        const u = new URL(gw);
+        if (u.password) {
+            return `${u.protocol}//${u.username ? u.username + ':***@' : '***@'}${u.host}`;
+        }
+        return gw;
+    } catch (_) {
+        return gw.replace(/:\/\/[^@]*@/, '://***@');
+    }
+}
+
+function sanitizeCampaignForClient(campaign) {
+    if (!campaign) return null;
+    const copy = JSON.parse(JSON.stringify(campaign));
+    if (copy.proxyConfig) {
+        if (Array.isArray(copy.proxyConfig.gateways)) {
+            copy.proxyConfig.gateways = copy.proxyConfig.gateways.map(sanitizeProxyGateway);
+        }
+        if (copy.proxyConfig.currentGateway) {
+            copy.proxyConfig.currentGateway = sanitizeProxyGateway(copy.proxyConfig.currentGateway);
+        }
+    }
+    if (copy.lastGateway) {
+        copy.lastGateway = sanitizeProxyGateway(copy.lastGateway);
+    }
+    if (Array.isArray(copy.recentLogs)) {
+        copy.recentLogs = copy.recentLogs.map(log => ({
+            ...log,
+            gateway: log.gateway ? sanitizeProxyGateway(log.gateway) : null
+        }));
+    }
+    return copy;
 }
 
 // In-memory fallback when neither DO nor KV is attached
@@ -237,6 +314,9 @@ async function executeBrowserlessJob(url, token, options = {}) {
     const startTime = Date.now();
     const timeoutMs = Math.max(5000, parseInt(options.timeoutMs, 10) || 15000);
     const proxyUrl = options.proxyUrl || null;
+    const scenario = Array.isArray(options.scenario) && options.scenario.length > 0
+        ? options.scenario
+        : [{ action: 'goto', url, timeout: timeoutMs }];
 
     let proxyHostPort = null;
     let proxyAuth = null;
@@ -260,38 +340,86 @@ async function executeBrowserlessJob(url, token, options = {}) {
         endpoint += `&--proxy-server=${encodeURIComponent(proxyHostPort)}`;
     }
 
-    // Stateless Puppeteer code executed inside Browserless Chromium container
+    // Stateless Puppeteer code executed inside Browserless Chromium container with Scenario Engine
     const script = `export default async ({ page }) => {
   const t0 = Date.now();
+  const stepLogs = [];
   ${proxyAuth ? `try { await page.authenticate({ username: ${JSON.stringify(proxyAuth.username)}, password: ${JSON.stringify(proxyAuth.password)} }); } catch (_) {}` : ''}
   try {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
     await page.setViewport({ width: 1366, height: 768 });
-    const response = await page.goto(${JSON.stringify(url)}, {
-      waitUntil: 'domcontentloaded',
-      timeout: ${timeoutMs}
-    });
-    const statusCode = response ? response.status() : 200;
+
+    const scenario = ${JSON.stringify(scenario)};
+    let lastStatusCode = 200;
+
+    for (let i = 0; i < scenario.length; i++) {
+      const step = scenario[i];
+      const sStart = Date.now();
+      try {
+        if (step.action === 'goto' || !step.action) {
+          const target = step.url || ${JSON.stringify(url)};
+          const res = await page.goto(target, {
+            waitUntil: 'domcontentloaded',
+            timeout: step.timeout || ${timeoutMs}
+          });
+          if (res) lastStatusCode = res.status();
+          stepLogs.push({ step: i + 1, action: 'goto', target, status: 'ok', durationMs: Date.now() - sStart });
+        } else if (step.action === 'waitForSelector') {
+          await page.waitForSelector(step.selector, { timeout: step.timeout || 5000 });
+          stepLogs.push({ step: i + 1, action: 'waitForSelector', selector: step.selector, status: 'ok', durationMs: Date.now() - sStart });
+        } else if (step.action === 'click') {
+          await page.waitForSelector(step.selector, { timeout: step.timeout || 5000 });
+          await page.click(step.selector);
+          stepLogs.push({ step: i + 1, action: 'click', selector: step.selector, status: 'ok', durationMs: Date.now() - sStart });
+        } else if (step.action === 'type' || step.action === 'fill') {
+          await page.waitForSelector(step.selector, { timeout: step.timeout || 5000 });
+          await page.type(step.selector, step.value || '', { delay: 30 });
+          stepLogs.push({ step: i + 1, action: 'type', selector: step.selector, status: 'ok', durationMs: Date.now() - sStart });
+        } else if (step.action === 'assertText') {
+          await page.waitForSelector(step.selector, { timeout: step.timeout || 5000 });
+          const text = await page.$eval(step.selector, el => el.textContent || '');
+          if (!text.includes(step.expected)) {
+            throw new Error('Assert text failed: expected "' + step.expected + '", got "' + text.trim().slice(0, 60) + '"');
+          }
+          stepLogs.push({ step: i + 1, action: 'assertText', selector: step.selector, status: 'ok', durationMs: Date.now() - sStart });
+        } else if (step.action === 'wait') {
+          const waitDur = Math.min(step.duration || 1000, 5000);
+          await new Promise(r => setTimeout(r, waitDur));
+          stepLogs.push({ step: i + 1, action: 'wait', durationMs: waitDur, status: 'ok' });
+        }
+      } catch (stepErr) {
+        stepLogs.push({ step: i + 1, action: step.action, status: 'failed', error: stepErr.message, durationMs: Date.now() - sStart });
+        throw stepErr;
+      }
+    }
+
     const pageTitle = await page.title().catch(() => '');
     const finalUrl = page.url();
     const duration = Date.now() - t0;
     return {
       data: {
-        success: statusCode >= 200 && statusCode < 400,
-        statusCode,
+        success: lastStatusCode >= 200 && lastStatusCode < 400,
+        statusCode: lastStatusCode,
         pageTitle,
         finalUrl,
+        stepLogs,
         durationMs: duration
       },
       type: 'application/json'
     };
   } catch (err) {
+    let errorScreenshot = null;
+    try {
+      errorScreenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
+    } catch (_) {}
     return {
       data: {
         success: false,
         statusCode: 504,
         pageTitle: '',
-        finalUrl: ${JSON.stringify(url)},
+        finalUrl: page ? page.url() : ${JSON.stringify(url)},
+        stepLogs,
+        errorScreenshot: errorScreenshot ? ('data:image/jpeg;base64,' + errorScreenshot) : null,
         durationMs: Date.now() - t0,
         error: err.message
       },
@@ -323,7 +451,9 @@ async function executeBrowserlessJob(url, token, options = {}) {
                 latencyMs,
                 error: `Browserless HTTP ${res.status}: ${errText.slice(0, 150)}`,
                 pageTitle: null,
-                finalUrl: url
+                finalUrl: url,
+                stepLogs: [],
+                errorScreenshot: null
             };
         }
 
@@ -341,7 +471,9 @@ async function executeBrowserlessJob(url, token, options = {}) {
             latencyMs: actualLatency,
             error: payload.error || (success ? null : `HTTP ${statusCode}`),
             pageTitle,
-            finalUrl
+            finalUrl,
+            stepLogs: payload.stepLogs || [],
+            errorScreenshot: payload.errorScreenshot || null
         };
     } catch (err) {
         const latencyMs = Date.now() - startTime;
@@ -351,7 +483,9 @@ async function executeBrowserlessJob(url, token, options = {}) {
             latencyMs,
             error: err.name === 'AbortError' ? `Timeout (${timeoutMs}ms)` : err.message,
             pageTitle: null,
-            finalUrl: url
+            finalUrl: url,
+            stepLogs: [],
+            errorScreenshot: null
         };
     }
 }
@@ -442,15 +576,51 @@ export class CampaignRunnerDO {
                 return;
             }
 
+            // ── Idempotency & In-Flight Guard ──
+            // Cloudflare DO Alarms are at-least-once. If an alarm retries while a job is currently dispatched and within timeout, skip.
+            const timeoutWithBuffer = (campaign.timeoutMs || 15000) + 5000;
+            if (campaign.currentJob && campaign.currentJob.status === 'dispatched') {
+                if (now - campaign.currentJob.startedAt < timeoutWithBuffer) {
+                    console.warn(`[DO Alarm] In-flight job #${campaign.currentJob.sequence} still running. Skipping duplicate tick.`);
+                    return;
+                }
+            }
+
             // State machine: mark as started
             campaign.hasStarted = true;
+
+            // Start-to-Start Baseline Timing: Record dispatch start timestamp
+            const dispatchStartedAt = Date.now();
+            const nextSeq = (campaign.jobSequence || 0) + 1;
+            campaign.jobSequence = nextSeq;
+            campaign.currentJob = {
+                id: `${campaign.id}:${nextSeq}`,
+                sequence: nextSeq,
+                status: 'dispatched',
+                startedAt: dispatchStartedAt
+            };
+            // Persist the dispatched state immediately to guard against retry race
+            await this.storage.put('campaign', campaign);
+
+            // Compute planned interval from start time (Start-to-Start baseline)
+            const mode = campaign.executionMode || 'http';
+            const adaptive = calculateAdaptiveNextInterval({
+                now: dispatchStartedAt,
+                endTime: campaign.endTime,
+                remainingRequests: remaining,
+                mode: campaign.scheduleMode || 'smart',
+                timezoneOffsetMinutes: campaign.timezoneOffsetMinutes,
+                avgLatencyMs: campaign.avgLatencyMs || 0
+            });
+            const minInterval = mode === 'browser' ? 1500 : 1000;
+            let plannedIntervalMs = Math.max(minInterval, adaptive.jitteredIntervalMs || 5000);
+            plannedIntervalMs = Math.min(plannedIntervalMs, Math.max(minInterval, campaign.endTime - dispatchStartedAt));
 
             // Decoupled Gateway / Proxy rotation (checked before each alarm tick)
             const activeGateway = checkAndRotateProxy(campaign);
 
             // Execute based on executionMode: 'browser' (Chromium via Browserless.io) or 'http' (Cloudflare fetch)
             let res;
-            const mode = campaign.executionMode || 'http';
             if (mode === 'browser') {
                 const token = this.env?.BROWSERLESS_TOKEN;
                 if (!token) {
@@ -458,16 +628,29 @@ export class CampaignRunnerDO {
                 }
                 res = await executeBrowserlessJob(campaign.targetUrl, token, {
                     timeoutMs: campaign.timeoutMs || 15000,
-                    proxyUrl: activeGateway
+                    proxyUrl: activeGateway,
+                    scenario: campaign.scenario || null
                 });
                 campaign.lastPageTitle = res.pageTitle || '';
                 campaign.lastFinalUrl = res.finalUrl || campaign.targetUrl;
+                campaign.lastStepLogs = res.stepLogs || [];
+                if (res.errorScreenshot) {
+                    campaign.lastErrorScreenshot = res.errorScreenshot;
+                } else if (res.success) {
+                    campaign.lastErrorScreenshot = null;
+                }
             } else {
                 res = await executeWorkerRequest(campaign.targetUrl, campaign.timeoutMs || 8000);
             }
 
-            const reqNow = Date.now();
-            const reqViTime = formatVnTime(reqNow);
+            const jobFinishedAt = Date.now();
+            const reqViTime = formatVnTime(jobFinishedAt);
+
+            // Update exponential moving average latency
+            const alpha = 0.25;
+            campaign.avgLatencyMs = campaign.avgLatencyMs
+                ? Math.round(campaign.avgLatencyMs * (1 - alpha) + res.latencyMs * alpha)
+                : res.latencyMs;
 
             campaign.totalDispatched = (campaign.totalDispatched || 0) + 1;
             if (res.success) {
@@ -476,18 +659,18 @@ export class CampaignRunnerDO {
                 campaign.failedRequests = (campaign.failedRequests || 0) + 1;
             }
 
-            campaign.lastGateway = activeGateway || null;
-            campaign.lastAlarmRun = reqNow;
+            campaign.lastGateway = activeGateway ? sanitizeProxyGateway(activeGateway) : null;
+            campaign.lastAlarmRun = jobFinishedAt;
             campaign.lastAlarmRunText = reqViTime;
-            campaign.lastRequestTime = reqNow;
+            campaign.lastRequestTime = jobFinishedAt;
             campaign.lastRequestText = reqViTime;
             campaign.lastStatusCode = res.statusCode;
             campaign.lastLatencyMs = res.latencyMs;
-            campaign.lastError = res.error || null;
+            campaign.lastError = res.error ? sanitizeProxyGateway(res.error) : null;
 
             if (!Array.isArray(campaign.recentLogs)) campaign.recentLogs = [];
             const modeTag = mode === 'browser' ? '🌐 Browser QA' : '⚡ HTTP';
-            const gwInfo = activeGateway ? ` [GW: ${activeGateway.replace(/:\/\/[^@]*@/, '://***@')}]` : '';
+            const gwInfo = activeGateway ? ` [GW: ${sanitizeProxyGateway(activeGateway)}]` : '';
             const titleInfo = (mode === 'browser' && res.pageTitle) ? ` • "${res.pageTitle}"` : '';
 
             campaign.recentLogs.push({
@@ -496,42 +679,57 @@ export class CampaignRunnerDO {
                 latencyMs: res.latencyMs,
                 success: res.success,
                 mode,
-                gateway: activeGateway || null,
+                gateway: activeGateway ? sanitizeProxyGateway(activeGateway) : null,
                 pageTitle: res.pageTitle || null,
+                seq: nextSeq,
                 text: res.success
-                    ? `[${modeTag} ${res.statusCode} OK] ${campaign.targetUrl}${gwInfo} (${res.latencyMs}ms)${titleInfo}`
-                    : `[${modeTag} Lỗi] ${res.error}${gwInfo} (${res.latencyMs}ms)`
+                    ? `[#${nextSeq} ${modeTag} ${res.statusCode} OK] ${campaign.targetUrl}${gwInfo} (${res.latencyMs}ms)${titleInfo}`
+                    : `[#${nextSeq} ${modeTag} Lỗi] ${res.error ? sanitizeProxyGateway(res.error) : 'Lỗi không xác định'}${gwInfo} (${res.latencyMs}ms)`
             });
             if (campaign.recentLogs.length > 50) campaign.recentLogs.shift();
+
+            // Mark job completion & idempotency record
+            campaign.lastCompletedSequence = nextSeq;
+            campaign.currentJob = {
+                id: `${campaign.id}:${nextSeq}`,
+                sequence: nextSeq,
+                status: 'completed',
+                startedAt: dispatchStartedAt,
+                finishedAt: jobFinishedAt
+            };
 
             // Check if finished right now
             if ((campaign.successRequests || 0) >= campaign.targetRequests) {
                 campaign.status = 'completed';
-                campaign.actualEndTime = reqNow;
+                campaign.actualEndTime = jobFinishedAt;
                 await this.storage.put('campaign', campaign);
                 await this.storage.deleteAlarm();
                 return;
             }
 
-            // Calculate next adaptive interval for Smart / Even
-            const newRemaining = campaign.targetRequests - (campaign.successRequests || 0);
-            const adaptive = calculateAdaptiveNextInterval({
-                now: reqNow,
-                endTime: campaign.endTime,
-                remainingRequests: newRemaining,
-                mode: campaign.scheduleMode || 'smart',
-                timezoneOffsetMinutes: campaign.timezoneOffsetMinutes
-            });
+            // ── Start-to-Start Timing Calculation ──
+            // Target next alarm is strictly calculated from dispatch start, NOT completion!
+            const targetNextAlarmTime = dispatchStartedAt + plannedIntervalMs;
+            let nextAlarmTime;
+            let schedulerLagMs = 0;
+
+            if (jobFinishedAt >= targetNextAlarmTime) {
+                // Job duration exceeded planned interval! Mark lag and run immediate debounce
+                schedulerLagMs = jobFinishedAt - targetNextAlarmTime;
+                nextAlarmTime = jobFinishedAt + 100;
+            } else {
+                schedulerLagMs = 0;
+                nextAlarmTime = targetNextAlarmTime;
+            }
+
+            campaign.schedulerLagMs = schedulerLagMs;
+            campaign.lastPlannedIntervalMs = plannedIntervalMs;
+            campaign.feasibility = adaptive.feasibility;
 
             // Persist strongly consistent state in Durable Object
             await this.storage.put('campaign', campaign);
 
             // Reschedule alarm for the natural organic interval
-            let nextIntervalMs = adaptive.jitteredIntervalMs || 5000;
-            // Floor: 1500ms for browser, 1000ms for http; ceiling at time left before endTime
-            const minInterval = mode === 'browser' ? 1500 : 1000;
-            nextIntervalMs = Math.max(minInterval, Math.min(nextIntervalMs, Math.max(minInterval, campaign.endTime - reqNow)));
-            const nextAlarmTime = reqNow + nextIntervalMs;
             await this.storage.setAlarm(nextAlarmTime);
         } catch (err) {
             console.error('[DO Alarm Error]:', err.message);
@@ -549,6 +747,17 @@ export class CampaignRunnerDO {
         if (path === '/registry/get-ids') {
             const ids = await this.storage.get('campaign_ids') || [];
             return new Response(JSON.stringify(ids), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (path === '/registry/next-id' && request.method === 'POST') {
+            let currentCounter = await this.storage.get('campaign_counter');
+            if (typeof currentCounter !== 'number') {
+                const ids = await this.storage.get('campaign_ids') || [];
+                currentCounter = ids.reduce((max, item) => Math.max(max, parseInt(item, 10) || 0), 0);
+            }
+            currentCounter += 1;
+            await this.storage.put('campaign_counter', currentCounter);
+            return new Response(JSON.stringify({ nextId: String(currentCounter) }), { headers: { 'Content-Type': 'application/json' } });
         }
 
         if (path === '/registry/add-id' && request.method === 'POST') {
@@ -578,6 +787,11 @@ export class CampaignRunnerDO {
 
         if (path === '/init' && request.method === 'POST') {
             const data = await request.json();
+            data.jobSequence = data.jobSequence || 0;
+            data.lastCompletedSequence = data.lastCompletedSequence || 0;
+            data.currentJob = null;
+            data.schedulerLagMs = 0;
+            data.avgLatencyMs = 0;
             await this.storage.put('campaign', data);
             const now = Date.now();
             if (data.status === 'running') {
@@ -632,6 +846,11 @@ export class CampaignRunnerDO {
                 campaign.successRequests = 0;
                 campaign.failedRequests = 0;
                 campaign.totalDispatched = 0;
+                campaign.jobSequence = 0;
+                campaign.lastCompletedSequence = 0;
+                campaign.currentJob = null;
+                campaign.schedulerLagMs = 0;
+                campaign.avgLatencyMs = 0;
                 campaign.lastAlarmRun = null;
                 campaign.lastAlarmRunText = null;
                 campaign.lastRequestTime = null;
@@ -641,6 +860,8 @@ export class CampaignRunnerDO {
                 campaign.lastError = null;
                 campaign.lastPageTitle = null;
                 campaign.lastFinalUrl = null;
+                campaign.lastStepLogs = [];
+                campaign.lastErrorScreenshot = null;
                 campaign.lastGateway = null;
                 if (campaign.proxyConfig) {
                     campaign.proxyConfig.currentIndex = 0;
@@ -677,7 +898,7 @@ export class CampaignRunnerDO {
                 const lockedFields = [
                     'targetUrl', 'targetRequests', 'scheduleMode', 'startTime', 'endTime',
                     'executionMode', 'proxyConfig', 'maxConcurrent', 'timeoutMs',
-                    'maxRetries', 'timezoneOffsetMinutes'
+                    'maxRetries', 'timezoneOffsetMinutes', 'scenario'
                 ];
                 const illegalFields = lockedFields.filter(field => {
                     if (body[field] === undefined) return false;
@@ -729,6 +950,24 @@ async function getRegistryIds(env) {
         }
     }
     return null;
+}
+
+async function getNextCampaignId(env) {
+    if (env && env.CAMPAIGN_RUNNER) {
+        try {
+            const regId = env.CAMPAIGN_RUNNER.idFromName('system:registry');
+            const stub = env.CAMPAIGN_RUNNER.get(regId);
+            const res = await stub.fetch('http://do/registry/next-id', { method: 'POST' });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.nextId) return data.nextId;
+            }
+        } catch (e) {
+            console.error('[DO Registry] Error generating next ID:', e.message);
+        }
+    }
+    const list = await getCampaigns(env);
+    return String(list.reduce((max, c) => Math.max(max, parseInt(c.id, 10) || 0), 0) + 1);
 }
 
 async function addRegistryId(env, id) {
@@ -980,13 +1219,20 @@ async function handleScheduled(event, env, ctx) {
 
 async function handleFetch(request, env, ctx) {
     const url = new URL(request.url);
+    const origin = request.headers.get('Origin');
+    const isSameOrigin = !origin || origin === url.origin;
     const corsHeaders = {
-        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Origin': isSameOrigin ? (origin || url.origin) : 'null',
         'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Headers': 'Content-Type, Cf-Access-Jwt-Assertion',
+        'Access-Control-Allow-Credentials': 'true',
+        'Vary': 'Origin'
     };
 
     if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
+
+    const cfAccessEmail = request.headers.get('Cf-Access-Authenticated-User-Email') || null;
+    const cfAccessJwt = request.headers.get('Cf-Access-Jwt-Assertion') || null;
 
     // GET /api/health - Check Worker, Storage (DO / KV), and Engine Pacing
     if (url.pathname === '/api/health' && request.method === 'GET') {
@@ -1025,12 +1271,25 @@ async function handleFetch(request, env, ctx) {
             serviceName: 'click-browserless',
             storage: isDO ? 'durable_objects' : ((env && env.CAMPAIGNS_KV) ? 'connected' : 'memory'),
             storageLabel: isDO ? '🟢 Durable Objects (Strong Consistency)' : '🟡 KV Storage',
-            engine: isDO ? 'DO Alarms (Organic Smart Pacing)' : 'Cron Trigger',
+            engine: isDO ? 'DO Alarms (Start-to-Start Smart Pacing)' : 'Cron Trigger',
             engineType: isDO ? 'durable_objects' : 'cron',
+            accessControl: {
+                authenticated: Boolean(cfAccessEmail),
+                userEmail: cfAccessEmail || null,
+                jwtPresent: Boolean(cfAccessJwt),
+                status: cfAccessEmail ? 'protected' : 'open',
+                label: cfAccessEmail ? `🛡️ Cloudflare Access (${cfAccessEmail})` : '⚠️ Public Access (Recommend Zero Trust)'
+            },
             browserless: {
-                status: 'connected',
+                status: env?.BROWSERLESS_TOKEN ? 'ready' : 'missing_token',
                 tokenConfigured: Boolean(env?.BROWSERLESS_TOKEN),
-                engine: 'Stateless Headless Chromium'
+                engine: 'Stateless Headless Chromium',
+                capabilities: {
+                    scenarioEngine: true,
+                    pageInteraction: true,
+                    screenshots: true,
+                    externalProxy: 'requires_paid_plan'
+                }
             },
             supportedModes: ['http', 'browser'],
             lastCronRun: cronMeta ? cronMeta.timestamp : null,
@@ -1051,7 +1310,7 @@ async function handleFetch(request, env, ctx) {
         const enriched = list.map(c => {
             const remaining = Math.max(0, c.targetRequests - (c.successRequests || 0));
             const progressPercent = c.targetRequests > 0 ? Number((((c.successRequests || 0) / c.targetRequests) * 100).toFixed(1)) : 0;
-            return { ...c, remaining, progressPercent, config: { ...c } };
+            return sanitizeCampaignForClient({ ...c, remaining, progressPercent, config: { ...c } });
         });
         return new Response(JSON.stringify({ success: true, data: enriched }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
@@ -1059,8 +1318,7 @@ async function handleFetch(request, env, ctx) {
     // POST /api/campaigns/sample (Tạo chiến dịch mẫu Browser QA chạy ngay hôm nay)
     if (url.pathname === '/api/campaigns/sample' && request.method === 'POST') {
         const now = Date.now();
-        const list = await getCampaigns(env);
-        const nextId = String(list.reduce((max, c) => Math.max(max, parseInt(c.id, 10) || 0), 0) + 1);
+        const nextId = await getNextCampaignId(env);
         const sample = {
             id: nextId,
             name: `Browser QA Mẫu ${nextId} (${formatVnTime(now)})`,
@@ -1070,6 +1328,11 @@ async function handleFetch(request, env, ctx) {
             endTime: now + 2 * 3600000,
             scheduleMode: 'smart',
             executionMode: 'browser',
+            scenario: [
+                { action: 'goto', url: 'https://example.com' },
+                { action: 'waitForSelector', selector: 'h1', timeout: 5000 },
+                { action: 'assertText', selector: 'h1', expected: 'Example' }
+            ],
             proxyConfig: {
                 enabled: false,
                 gateways: [],
@@ -1085,6 +1348,11 @@ async function handleFetch(request, env, ctx) {
             maxRetries: 1,
             status: 'running',
             hasStarted: true,
+            jobSequence: 0,
+            lastCompletedSequence: 0,
+            currentJob: null,
+            schedulerLagMs: 0,
+            avgLatencyMs: 0,
             successRequests: 0,
             failedRequests: 0,
             totalDispatched: 0,
@@ -1097,6 +1365,8 @@ async function handleFetch(request, env, ctx) {
             lastError: null,
             lastPageTitle: null,
             lastFinalUrl: null,
+            lastStepLogs: [],
+            lastErrorScreenshot: null,
             lastGateway: null,
             actualStartTime: now,
             actualEndTime: null,
@@ -1113,11 +1383,12 @@ async function handleFetch(request, env, ctx) {
                 body: JSON.stringify(sample)
             });
         } else {
+            const list = await getCampaigns(env);
             list.push(sample);
             await saveCampaigns(env, list);
         }
 
-        return new Response(JSON.stringify({ success: true, id: nextId, campaign: sample }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+        return new Response(JSON.stringify({ success: true, id: nextId, campaign: sanitizeCampaignForClient(sample) }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
 
     // POST /api/campaigns
@@ -1126,8 +1397,7 @@ async function handleFetch(request, env, ctx) {
             const body = await request.json();
             if (!body.targetUrl) return new Response(JSON.stringify({ success: false, message: 'targetUrl là bắt buộc' }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
 
-            const list = await getCampaigns(env);
-            const nextId = String(list.reduce((max, c) => Math.max(max, parseInt(c.id, 10) || 0), 0) + 1);
+            const nextId = await getNextCampaignId(env);
 
             const executionMode = (body.executionMode === 'browser') ? 'browser' : 'http';
             const rawGateways = Array.isArray(body.proxyConfig?.gateways)
@@ -1145,6 +1415,10 @@ async function handleFetch(request, env, ctx) {
                 nextRotationAt: null
             };
 
+            const scenario = (executionMode === 'browser' && Array.isArray(body.scenario) && body.scenario.length > 0)
+                ? body.scenario
+                : null;
+
             const isStartNow = (Number(body.startTime) || Date.now()) <= Date.now();
             const newCampaign = {
                 id: nextId,
@@ -1155,6 +1429,7 @@ async function handleFetch(request, env, ctx) {
                 endTime: Number(body.endTime) || (Date.now() + 6 * 3600000),
                 scheduleMode: body.scheduleMode === 'even' ? 'even' : 'smart',
                 executionMode,
+                scenario,
                 proxyConfig,
                 timeoutMs: parseInt(body.timeoutMs, 10) || (executionMode === 'browser' ? 15000 : 8000),
                 maxConcurrent: Math.max(1, Math.min(20, parseInt(body.maxConcurrent, 10) || (executionMode === 'browser' ? 2 : 3))),
@@ -1162,6 +1437,11 @@ async function handleFetch(request, env, ctx) {
                 maxRetries: 1,
                 status: isStartNow ? 'running' : 'waiting',
                 hasStarted: isStartNow,
+                jobSequence: 0,
+                lastCompletedSequence: 0,
+                currentJob: null,
+                schedulerLagMs: 0,
+                avgLatencyMs: 0,
                 successRequests: 0,
                 failedRequests: 0,
                 totalDispatched: 0,
@@ -1174,6 +1454,8 @@ async function handleFetch(request, env, ctx) {
                 lastError: null,
                 lastPageTitle: null,
                 lastFinalUrl: null,
+                lastStepLogs: [],
+                lastErrorScreenshot: null,
                 lastGateway: null,
                 actualStartTime: isStartNow ? Date.now() : null,
                 actualEndTime: null,
@@ -1190,11 +1472,12 @@ async function handleFetch(request, env, ctx) {
                     body: JSON.stringify(newCampaign)
                 });
             } else {
+                const list = await getCampaigns(env);
                 list.push(newCampaign);
                 await saveCampaigns(env, list);
             }
 
-            return new Response(JSON.stringify({ success: true, id: nextId, campaign: newCampaign }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+            return new Response(JSON.stringify({ success: true, id: nextId, campaign: sanitizeCampaignForClient(newCampaign) }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
         } catch (e) {
             return new Response(JSON.stringify({ success: false, message: e.message }), { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
         }
@@ -1229,6 +1512,7 @@ async function handleFetch(request, env, ctx) {
                     body: JSON.stringify(body)
                 });
                 const d = await res.json();
+                if (d.campaign) d.campaign = sanitizeCampaignForClient(d.campaign);
                 return new Response(JSON.stringify(d), { status: res.status, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
             }
 
@@ -1286,7 +1570,7 @@ async function handleFetch(request, env, ctx) {
                 const lockedFields = [
                     'targetUrl', 'targetRequests', 'scheduleMode', 'startTime', 'endTime',
                     'executionMode', 'proxyConfig', 'maxConcurrent', 'timeoutMs',
-                    'maxRetries', 'timezoneOffsetMinutes'
+                    'maxRetries', 'timezoneOffsetMinutes', 'scenario'
                 ];
                 const illegalFields = lockedFields.filter(f => body[f] !== undefined && JSON.stringify(body[f]) !== JSON.stringify(campaign[f]));
                 if (illegalFields.length > 0) {
@@ -1299,7 +1583,7 @@ async function handleFetch(request, env, ctx) {
 
             Object.assign(campaign, body);
             await saveCampaigns(env, list);
-            return new Response(JSON.stringify({ success: true, campaign }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+            return new Response(JSON.stringify({ success: true, campaign: sanitizeCampaignForClient(campaign) }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
         }
 
         if (request.method === 'POST') {
@@ -1341,6 +1625,11 @@ async function handleFetch(request, env, ctx) {
                 campaign.successRequests = 0;
                 campaign.failedRequests = 0;
                 campaign.totalDispatched = 0;
+                campaign.jobSequence = 0;
+                campaign.lastCompletedSequence = 0;
+                campaign.currentJob = null;
+                campaign.schedulerLagMs = 0;
+                campaign.avgLatencyMs = 0;
                 campaign.lastCronRun = null;
                 campaign.lastCronRunText = null;
                 campaign.lastRequestTime = null;
@@ -1350,6 +1639,8 @@ async function handleFetch(request, env, ctx) {
                 campaign.lastError = null;
                 campaign.lastPageTitle = null;
                 campaign.lastFinalUrl = null;
+                campaign.lastStepLogs = [];
+                campaign.lastErrorScreenshot = null;
                 campaign.lastGateway = null;
                 campaign.actualStartTime = null;
                 campaign.actualEndTime = null;
@@ -1377,14 +1668,15 @@ async function handleFetch(request, env, ctx) {
             }
             result = await executeBrowserlessJob(body.url, token, {
                 timeoutMs: parseInt(body.timeoutMs, 10) || 15000,
-                proxyUrl: body.proxyUrl || null
+                proxyUrl: body.proxyUrl || null,
+                scenario: Array.isArray(body.scenario) ? body.scenario : null
             });
         } else {
             result = await executeWorkerRequest(body.url, parseInt(body.timeoutMs, 10) || 5000);
         }
+        if (result.error) result.error = sanitizeProxyGateway(result.error);
         return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
-
 
     // GET /api/preview-distribution
     if (url.pathname === '/api/preview-distribution') {
