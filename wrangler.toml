@@ -9,3 +9,7 @@ binding = "ASSETS"
 
 [triggers]
 crons = ["* * * * *"]
+
+[[kv_namespaces]]
+binding = "CAMPAIGNS_KV"
+id = "e638341dfe054b49be277a0dd3780983"

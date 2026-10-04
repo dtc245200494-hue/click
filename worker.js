@@ -1,5 +1,5 @@
 /**
- * worker.js - Cloudflare Worker Entrypoint
+ * worker.js - Cloudflare Worker Entrypoint (ES Module)
  * Supports:
  *  - REST API & Static Asset Serving (Dashboard)
  *  - Cloudflare Cron Trigger (Runs every 1 min for 24/7 background load testing)
@@ -7,14 +7,191 @@
  *  - Adaptive Smart/Even Scheduler Pacing
  */
 
-const {
-    calculateAdaptiveNextInterval,
-    buildTimeDistribution,
-    formatDuration,
-    hasTimezoneOffset
-} = require('./timeDistribution');
+// ─── Time Distribution Engine (Inlined) ──────────────────────────────────────
 
-// Default initial campaign if KV is empty
+const SMART_HOURLY_WEIGHTS = {
+    0: 0.25, 1: 0.15, 2: 0.10, 3: 0.10, 4: 0.15, 5: 0.30,
+    6: 0.60, 7: 0.90, 8: 1.20,
+    9: 1.60, 10: 1.70, 11: 1.50,
+    12: 1.00, 13: 1.10,
+    14: 1.60, 15: 1.80, 16: 1.70, 17: 1.50,
+    18: 1.40, 19: 1.60, 20: 1.70, 21: 1.50,
+    22: 1.00, 23: 0.60
+};
+
+const TIME_BLOCK_DEFINITIONS = [
+    { id: 'night', label: '🌙 Đêm (00h-06h)', hours: [0,1,2,3,4,5], color: '#64748b' },
+    { id: 'early', label: '🌅 Sáng sớm (06h-09h)', hours: [6,7,8], color: '#f59e0b' },
+    { id: 'morn',  label: '💼 Sáng cao điểm (09h-12h)', hours: [9,10,11], color: '#22c55e' },
+    { id: 'noon',  label: '🍱 Trưa (12h-14h)', hours: [12,13], color: '#38bdf8' },
+    { id: 'after', label: '📈 Chiều cao điểm (14h-18h)', hours: [14,15,16,17], color: '#818cf8' },
+    { id: 'eve',   label: '📱 Tối cao điểm (18h-22h)', hours: [18,19,20,21], color: '#ec4899' },
+    { id: 'late',  label: '🌜 Khuya (22h-00h)', hours: [22,23], color: '#a855f7' }
+];
+
+function hasTimezoneOffset(tz) {
+    return tz !== null && tz !== undefined && tz !== '' && Number.isFinite(Number(tz));
+}
+
+function formatDuration(durationMs) {
+    if (durationMs <= 0) return '0 giây';
+    const totalSecs = Math.round(durationMs / 1000);
+    const totalMins = Math.floor(totalSecs / 60);
+    const secsRemaining = totalSecs % 60;
+    if (totalSecs < 60) return `${totalSecs} giây`;
+    if (totalMins < 60) return secsRemaining > 0 ? `${totalMins} phút ${secsRemaining}s` : `${totalMins} phút`;
+    const totalHours = Math.floor(totalMins / 60);
+    const minsRemaining = totalMins % 60;
+    if (totalHours < 24) return minsRemaining > 0 ? `${totalHours} giờ ${minsRemaining} phút` : `${totalHours} giờ`;
+    const totalDays = Math.floor(totalHours / 24);
+    const hoursRemaining = totalHours % 24;
+    return `${totalDays} ngày ${hoursRemaining > 0 ? hoursRemaining + ' giờ ' : ''}${minsRemaining > 0 ? minsRemaining + ' phút' : ''}`.trim();
+}
+
+function toOffsetDate(ms, timezoneOffsetMinutes = null) {
+    if (!hasTimezoneOffset(timezoneOffsetMinutes)) return new Date(ms);
+    return new Date(ms - Number(timezoneOffsetMinutes) * 60000);
+}
+
+function getHourForTimezone(ms, timezoneOffsetMinutes = null) {
+    const d = toOffsetDate(ms, timezoneOffsetMinutes);
+    return hasTimezoneOffset(timezoneOffsetMinutes) ? d.getUTCHours() : d.getHours();
+}
+
+function nextHourForTimezone(ms, timezoneOffsetMinutes = null) {
+    if (!hasTimezoneOffset(timezoneOffsetMinutes)) {
+        const d = new Date(ms);
+        d.setMinutes(0, 0, 0);
+        d.setHours(d.getHours() + 1);
+        return d.getTime();
+    }
+    const offset = Number(timezoneOffsetMinutes);
+    const local = new Date(ms - offset * 60000);
+    const nextLocalUtc = Date.UTC(
+        local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(),
+        local.getUTCHours() + 1, 0, 0, 0
+    );
+    return nextLocalUtc + offset * 60000;
+}
+
+function formatTimeOnly(ms, timezoneOffsetMinutes = null) {
+    const d = toOffsetDate(ms, timezoneOffsetMinutes);
+    const hh = String(hasTimezoneOffset(timezoneOffsetMinutes) ? d.getUTCHours() : d.getHours()).padStart(2, '0');
+    const mm = String(hasTimezoneOffset(timezoneOffsetMinutes) ? d.getUTCMinutes() : d.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+}
+
+function buildTimeDistribution({ startTime, endTime, targetClicks, mode = 'smart', timezoneOffsetMinutes = null }) {
+    const startMs = typeof startTime === 'number' ? startTime : new Date(startTime).getTime();
+    const endMs   = typeof endTime   === 'number' ? endTime   : new Date(endTime).getTime();
+    const requests = parseInt(targetClicks, 10) || 0;
+
+    if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs || requests <= 0)
+        return { valid: false, startMs, endMs, targetClicks: requests, durationMs: 0, durationFormatted: '0 phút', slices: [], summaryBlocks: [], avgIntervalSec: 0 };
+
+    const durationMs = endMs - startMs;
+    const durationFormatted = formatDuration(durationMs);
+    const avgIntervalSec = Number((durationMs / 1000 / requests).toFixed(1));
+
+    let hourlyWeightMap = SMART_HOURLY_WEIGHTS;
+    if (mode === 'even') { hourlyWeightMap = {}; for (let h = 0; h < 24; h++) hourlyWeightMap[h] = 1.0; }
+
+    const rawSlices = [];
+    let curTime = startMs;
+    while (curTime < endMs) {
+        const nextHourTime = nextHourForTimezone(curTime, timezoneOffsetMinutes);
+        const sliceEnd = Math.min(endMs, nextHourTime);
+        const sliceDurationMs = sliceEnd - curTime;
+        const hourOfDay = getHourForTimezone(curTime, timezoneOffsetMinutes);
+        const baseWeight = hourlyWeightMap[hourOfDay] !== undefined ? hourlyWeightMap[hourOfDay] : 1.0;
+        rawSlices.push({
+            start: curTime, end: sliceEnd,
+            startStr: formatTimeOnly(curTime, timezoneOffsetMinutes),
+            endStr: formatTimeOnly(sliceEnd, timezoneOffsetMinutes),
+            durationMs: sliceDurationMs, durationMinutes: Number((sliceDurationMs / 60000).toFixed(1)),
+            hourOfDay, weight: baseWeight * (sliceDurationMs / 3600000)
+        });
+        curTime = sliceEnd;
+    }
+
+    const totalWeight = rawSlices.reduce((sum, s) => sum + s.weight, 0);
+    if (totalWeight <= 0) return { valid: false, startMs, endMs, targetClicks: requests, durationMs, durationFormatted, slices: [], summaryBlocks: [], avgIntervalSec };
+
+    let totalAllocated = 0;
+    const slicesWithQuota = rawSlices.map((s, index) => {
+        const exact = requests * (s.weight / totalWeight);
+        const quota = Math.floor(exact);
+        totalAllocated += quota;
+        return { ...s, index, quota, remainder: exact - quota };
+    });
+
+    let remainderRequests = requests - totalAllocated;
+    const sortedByRemainder = [...slicesWithQuota].sort((a, b) => b.remainder - a.remainder);
+    for (let i = 0; i < sortedByRemainder.length && remainderRequests > 0; i++) {
+        slicesWithQuota[sortedByRemainder[i].index].quota += 1;
+        remainderRequests--;
+    }
+
+    const slices = slicesWithQuota.map(s => ({ ...s, percent: requests > 0 ? Number(((s.quota / requests) * 100).toFixed(1)) : 0 }));
+
+    let summaryBlocks = [];
+    if (durationMs <= 60 * 60 * 1000) {
+        summaryBlocks = [{ id: 'exact_span', label: `⏱️ ${slices[0].startStr} → ${slices[slices.length - 1].endStr} (${durationFormatted})`, quota: requests, percent: 100, color: '#818cf8', durationFormatted }];
+    } else {
+        for (const bDef of TIME_BLOCK_DEFINITIONS) {
+            const matching = slices.filter(s => bDef.hours.includes(s.hourOfDay));
+            if (matching.length === 0) continue;
+            const blockQuota = matching.reduce((sum, s) => sum + s.quota, 0);
+            summaryBlocks.push({ id: bDef.id, label: bDef.label, quota: blockQuota, percent: Number(((blockQuota / requests) * 100).toFixed(1)), color: bDef.color, durationFormatted: formatDuration(matching.reduce((sum, s) => sum + s.durationMs, 0)) });
+        }
+    }
+
+    return { valid: true, startMs, endMs, targetClicks: requests, mode, timezoneOffsetMinutes: hasTimezoneOffset(timezoneOffsetMinutes) ? Number(timezoneOffsetMinutes) : null, durationMs, durationFormatted, avgIntervalSec, slices, summaryBlocks };
+}
+
+function calculateAdaptiveNextInterval({ now = Date.now(), endTime, remainingRequests, mode = 'smart', timezoneOffsetMinutes = null }) {
+    const timeRemainingMs = endTime - now;
+    if (timeRemainingMs <= 0 || remainingRequests <= 0)
+        return { valid: false, timeRemainingMs: Math.max(0, timeRemainingMs), remainingRequests: Math.max(0, remainingRequests), idealIntervalMs: 0, jitteredIntervalMs: 0, currentRatePerHour: 0 };
+
+    if (mode === 'even') {
+        const idealIntervalMs = timeRemainingMs / remainingRequests;
+        const jitter = 0.92 + 0.16 * Math.random();
+        return { valid: true, timeRemainingMs, remainingRequests, idealIntervalMs: Math.round(idealIntervalMs), jitteredIntervalMs: Math.max(50, Math.round(idealIntervalMs * jitter)), currentRatePerHour: Number(((3600000 / idealIntervalMs)).toFixed(1)), quotaCurrentSlice: Math.max(1, Math.round(remainingRequests * (Math.min(3600000, timeRemainingMs) / timeRemainingMs))) };
+    }
+
+    const remainingSlices = [];
+    let cur = now;
+    while (cur < endTime) {
+        const nextHour = nextHourForTimezone(cur, timezoneOffsetMinutes);
+        const sliceEnd = Math.min(endTime, nextHour);
+        const sliceDur = sliceEnd - cur;
+        const hour = getHourForTimezone(cur, timezoneOffsetMinutes);
+        const baseW = SMART_HOURLY_WEIGHTS[hour] !== undefined ? SMART_HOURLY_WEIGHTS[hour] : 1.0;
+        remainingSlices.push({ start: cur, end: sliceEnd, durationMs: sliceDur, hour, baseW, weight: baseW * (sliceDur / 3600000) });
+        cur = sliceEnd;
+    }
+
+    const totalRemainingWeight = remainingSlices.reduce((sum, s) => sum + s.weight, 0);
+    if (totalRemainingWeight <= 0 || remainingSlices.length === 0) {
+        const fallbackInterval = timeRemainingMs / remainingRequests;
+        return { valid: true, timeRemainingMs, remainingRequests, idealIntervalMs: Math.round(fallbackInterval), jitteredIntervalMs: Math.round(fallbackInterval * (0.92 + 0.16 * Math.random())), currentRatePerHour: Number(((3600000 / fallbackInterval)).toFixed(1)), quotaCurrentSlice: remainingRequests };
+    }
+
+    const currentSlice = remainingSlices[0];
+    const currentSliceFraction = currentSlice.weight / totalRemainingWeight;
+    const currentSliceQuota = remainingRequests * currentSliceFraction;
+    let idealIntervalMs = currentSliceQuota >= 1 ? currentSlice.durationMs / currentSliceQuota : currentSlice.durationMs / Math.max(currentSliceQuota, 0.05);
+    idealIntervalMs = Math.min(timeRemainingMs, Math.max(50, idealIntervalMs));
+    const jitter = 0.92 + 0.16 * Math.random();
+    const jitteredIntervalMs = Math.max(50, Math.round(idealIntervalMs * jitter));
+    const currentRatePerHour = Number(((3600000 / idealIntervalMs)).toFixed(1));
+
+    return { valid: true, timeRemainingMs, remainingRequests, idealIntervalMs: Math.round(idealIntervalMs), jitteredIntervalMs, quotaCurrentSlice: Number(currentSliceQuota.toFixed(2)), currentRatePerHour, currentHour: currentSlice.hour, currentHourWeight: currentSlice.baseW };
+}
+
+// ─── Default Campaign ─────────────────────────────────────────────────────────
+
 const DEFAULT_CAMPAIGN = {
     id: "1",
     name: "Chiến dịch Benchmark 1",
@@ -36,18 +213,18 @@ const DEFAULT_CAMPAIGN = {
     recentLogs: []
 };
 
-// In-memory fallback if KV binding is not yet attached
+// In-memory fallback when KV binding is not attached
 let memoryCampaigns = new Map([["1", { ...DEFAULT_CAMPAIGN }]]);
 
-// ─── Storage Helpers ───────────────────────────────────────────────────────────
+// ─── Storage Helpers ──────────────────────────────────────────────────────────
+
 async function getCampaigns(env) {
     if (env && env.CAMPAIGNS_KV) {
         try {
             const list = await env.CAMPAIGNS_KV.get('campaigns_list', 'json');
             if (Array.isArray(list) && list.length > 0) return list;
-            // Initialize default if empty
             await env.CAMPAIGNS_KV.put('campaigns_list', JSON.stringify([DEFAULT_CAMPAIGN]));
-            return [DEFAULT_CAMPAIGN];
+            return [{ ...DEFAULT_CAMPAIGN }];
         } catch (e) {
             console.error('[KV] Error reading campaigns:', e.message);
         }
@@ -67,48 +244,35 @@ async function saveCampaigns(env, campaignsList) {
     }
 }
 
-// ─── HTTP Subrequest Runner ────────────────────────────────────────────────────
+// ─── HTTP Subrequest Runner ───────────────────────────────────────────────────
+
 async function executeWorkerRequest(url, timeoutMs = 8000) {
     const startTime = Date.now();
     try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
-
         const response = await fetch(url, {
             method: 'GET',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CloudflareWorkerTester/2.0',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Connection': 'keep-alive'
             },
             signal: controller.signal
         });
-
         clearTimeout(timer);
-        // Consume response body to close stream cleanly
         await response.text();
-
         const latencyMs = Date.now() - startTime;
         const success = response.status >= 200 && response.status < 400;
-
-        return {
-            success,
-            statusCode: response.status,
-            latencyMs,
-            error: success ? null : `HTTP ${response.status}`
-        };
+        return { success, statusCode: response.status, latencyMs, error: success ? null : `HTTP ${response.status}` };
     } catch (err) {
         const latencyMs = Date.now() - startTime;
-        return {
-            success: false,
-            statusCode: null,
-            latencyMs,
-            error: err.name === 'AbortError' ? `Timeout (${timeoutMs}ms)` : err.message
-        };
+        return { success: false, statusCode: null, latencyMs, error: err.name === 'AbortError' ? `Timeout (${timeoutMs}ms)` : err.message };
     }
 }
 
-// ─── Cron Trigger Handler (Scheduled Event) ───────────────────────────────────
+// ─── Cron Trigger Handler ─────────────────────────────────────────────────────
+
 async function handleScheduled(event, env, ctx) {
     const now = Date.now();
     const campaignsList = await getCampaigns(env);
@@ -117,205 +281,121 @@ async function handleScheduled(event, env, ctx) {
     for (const c of campaignsList) {
         if (['stopped', 'completed', 'expired', 'paused'].includes(c.status)) continue;
 
-        // Waiting check
         if (c.status === 'waiting') {
-            if (now >= c.startTime) {
-                c.status = 'running';
-                c.actualStartTime = now;
-                changed = true;
-            } else {
-                continue;
-            }
+            if (now >= c.startTime) { c.status = 'running'; c.actualStartTime = now; changed = true; }
+            else continue;
         }
 
-        // Expire check
         if (now >= c.endTime) {
             c.status = c.successRequests >= c.targetRequests ? 'completed' : 'expired';
-            c.actualEndTime = now;
-            changed = true;
-            continue;
+            c.actualEndTime = now; changed = true; continue;
         }
 
-        // Target reached check
         const remaining = c.targetRequests - (c.successRequests || 0);
-        if (remaining <= 0) {
-            c.status = 'completed';
-            c.actualEndTime = now;
-            changed = true;
-            continue;
-        }
+        if (remaining <= 0) { c.status = 'completed'; c.actualEndTime = now; changed = true; continue; }
 
-        // Adaptive calculation for this minute
         const adaptive = calculateAdaptiveNextInterval({
-            now,
-            endTime: c.endTime,
-            remainingRequests: remaining,
-            mode: c.scheduleMode || 'smart',
-            timezoneOffsetMinutes: c.timezoneOffsetMinutes
+            now, endTime: c.endTime, remainingRequests: remaining,
+            mode: c.scheduleMode || 'smart', timezoneOffsetMinutes: c.timezoneOffsetMinutes
         });
-
         if (!adaptive.valid) continue;
 
-        // Quota for this 1 minute window:
-        // If rate is 120 req/h => 2 requests in this minute
         const targetRatePerMinute = adaptive.currentRatePerHour / 60;
         let minuteQuota = Math.round(targetRatePerMinute);
-        if (targetRatePerMinute > 0 && minuteQuota === 0) minuteQuota = 1; // At least 1 if due
+        if (targetRatePerMinute > 0 && minuteQuota === 0) minuteQuota = 1;
         minuteQuota = Math.min(remaining, Math.max(1, minuteQuota));
-
-        // Limit concurrent dispatches per cron execution to keep CPU & duration bounded
         const maxBatch = Math.min(minuteQuota, c.maxConcurrent || 3, 5);
 
         for (let i = 0; i < maxBatch; i++) {
             if (c.successRequests >= c.targetRequests) break;
-
             const res = await executeWorkerRequest(c.targetUrl, c.timeoutMs || 8000);
             c.totalDispatched = (c.totalDispatched || 0) + 1;
-
-            if (res.success) {
-                c.successRequests = (c.successRequests || 0) + 1;
-            } else {
-                c.failedRequests = (c.failedRequests || 0) + 1;
-            }
-
-            // Append log
+            if (res.success) c.successRequests = (c.successRequests || 0) + 1;
+            else c.failedRequests = (c.failedRequests || 0) + 1;
             if (!Array.isArray(c.recentLogs)) c.recentLogs = [];
-            c.recentLogs.push({
-                timestamp: new Date().toLocaleTimeString('vi-VN'),
-                statusCode: res.statusCode,
-                latencyMs: res.latencyMs,
-                success: res.success,
-                text: res.success ? `[200 OK] ${c.targetUrl} (${res.latencyMs}ms)` : `[Lỗi] ${res.error} (${res.latencyMs}ms)`
-            });
+            c.recentLogs.push({ timestamp: new Date().toLocaleTimeString('vi-VN'), statusCode: res.statusCode, latencyMs: res.latencyMs, success: res.success, text: res.success ? `[${res.statusCode} OK] ${c.targetUrl} (${res.latencyMs}ms)` : `[Lỗi] ${res.error} (${res.latencyMs}ms)` });
             if (c.recentLogs.length > 30) c.recentLogs.shift();
-
             changed = true;
         }
 
-        if (c.successRequests >= c.targetRequests) {
-            c.status = 'completed';
-            c.actualEndTime = now;
-            changed = true;
-        }
+        if (c.successRequests >= c.targetRequests) { c.status = 'completed'; c.actualEndTime = now; changed = true; }
     }
 
-    if (changed) {
-        await saveCampaigns(env, campaignsList);
-    }
+    if (changed) await saveCampaigns(env, campaignsList);
 }
 
-// ─── Fetch Request Handler (API + Static Assets) ──────────────────────────────
+// ─── Fetch Handler (API + Static Assets) ─────────────────────────────────────
+
 async function handleFetch(request, env, ctx) {
     const url = new URL(request.url);
-
-    // CORS Headers helper
     const corsHeaders = {
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
     };
 
-    if (request.method === 'OPTIONS') {
-        return new Response(null, { headers: corsHeaders });
+    if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
+
+    // GET /api/campaigns
+    if (url.pathname === '/api/campaigns' && request.method === 'GET') {
+        const list = await getCampaigns(env);
+        const enriched = list.map(c => {
+            const remaining = Math.max(0, c.targetRequests - (c.successRequests || 0));
+            const progressPercent = c.targetRequests > 0 ? Number((((c.successRequests || 0) / c.targetRequests) * 100).toFixed(1)) : 0;
+            return { ...c, remaining, progressPercent, config: { ...c } };
+        });
+        return new Response(JSON.stringify({ success: true, data: enriched }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
 
-    // ─── API Routes ───────────────────────────────────────────────────────────
-    if (url.pathname === '/api/campaigns') {
-        if (request.method === 'GET') {
+    // POST /api/campaigns
+    if (url.pathname === '/api/campaigns' && request.method === 'POST') {
+        try {
+            const body = await request.json();
+            if (!body.targetUrl) return new Response(JSON.stringify({ success: false, message: 'targetUrl là bắt buộc' }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+
             const list = await getCampaigns(env);
-            const enriched = list.map(c => {
-                const remaining = Math.max(0, c.targetRequests - (c.successRequests || 0));
-                const progressPercent = c.targetRequests > 0 ? Number((((c.successRequests || 0) / c.targetRequests) * 100).toFixed(1)) : 0;
-                return {
-                    ...c,
-                    remaining,
-                    progressPercent,
-                    config: { ...c }
-                };
-            });
-            return new Response(JSON.stringify({ success: true, data: enriched }), {
-                headers: { 'Content-Type': 'application/json', ...corsHeaders }
-            });
-        }
-
-        if (request.method === 'POST') {
-            try {
-                const body = await request.json();
-                if (!body.targetUrl) {
-                    return new Response(JSON.stringify({ success: false, message: 'targetUrl là bắt buộc' }), {
-                        status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders }
-                    });
-                }
-
-                const list = await getCampaigns(env);
-                const nextId = String(list.reduce((max, c) => Math.max(max, parseInt(c.id, 10) || 0), 0) + 1);
-
-                const newCampaign = {
-                    id: nextId,
-                    name: body.name || `Chiến dịch ${nextId}`,
-                    targetUrl: body.targetUrl,
-                    targetRequests: parseInt(body.targetRequests, 10) || 100,
-                    startTime: Number(body.startTime) || Date.now(),
-                    endTime: Number(body.endTime) || (Date.now() + 6 * 3600000),
-                    scheduleMode: body.scheduleMode === 'even' ? 'even' : 'smart',
-                    timeoutMs: parseInt(body.timeoutMs, 10) || 8000,
-                    maxConcurrent: Math.max(1, Math.min(20, parseInt(body.maxConcurrent, 10) || 3)),
-                    timezoneOffsetMinutes: hasTimezoneOffset(body.timezoneOffsetMinutes) ? Number(body.timezoneOffsetMinutes) : -420,
-                    maxRetries: 1,
-                    status: (Number(body.startTime) || Date.now()) <= Date.now() ? 'running' : 'waiting',
-                    successRequests: 0,
-                    failedRequests: 0,
-                    totalDispatched: 0,
-                    actualStartTime: Date.now(),
-                    actualEndTime: null,
-                    recentLogs: []
-                };
-
-                list.push(newCampaign);
-                await saveCampaigns(env, list);
-
-                return new Response(JSON.stringify({ success: true, id: nextId, campaign: newCampaign }), {
-                    headers: { 'Content-Type': 'application/json', ...corsHeaders }
-                });
-            } catch (e) {
-                return new Response(JSON.stringify({ success: false, message: e.message }), {
-                    status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders }
-                });
-            }
+            const nextId = String(list.reduce((max, c) => Math.max(max, parseInt(c.id, 10) || 0), 0) + 1);
+            const newCampaign = {
+                id: nextId, name: body.name || `Chiến dịch ${nextId}`,
+                targetUrl: body.targetUrl, targetRequests: parseInt(body.targetRequests, 10) || 100,
+                startTime: Number(body.startTime) || Date.now(), endTime: Number(body.endTime) || (Date.now() + 6 * 3600000),
+                scheduleMode: body.scheduleMode === 'even' ? 'even' : 'smart',
+                timeoutMs: parseInt(body.timeoutMs, 10) || 8000,
+                maxConcurrent: Math.max(1, Math.min(20, parseInt(body.maxConcurrent, 10) || 3)),
+                timezoneOffsetMinutes: hasTimezoneOffset(body.timezoneOffsetMinutes) ? Number(body.timezoneOffsetMinutes) : -420,
+                maxRetries: 1, status: (Number(body.startTime) || Date.now()) <= Date.now() ? 'running' : 'waiting',
+                successRequests: 0, failedRequests: 0, totalDispatched: 0,
+                actualStartTime: Date.now(), actualEndTime: null, recentLogs: []
+            };
+            list.push(newCampaign);
+            await saveCampaigns(env, list);
+            return new Response(JSON.stringify({ success: true, id: nextId, campaign: newCampaign }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+        } catch (e) {
+            return new Response(JSON.stringify({ success: false, message: e.message }), { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
         }
     }
 
-    // Specific Campaign Actions: /api/campaigns/:id/...
+    // /api/campaigns/:id or /api/campaigns/:id/action
     const campaignActionMatch = url.pathname.match(/^\/api\/campaigns\/(\w+)(\/(\w+))?$/);
     if (campaignActionMatch) {
         const id = campaignActionMatch[1];
-        const action = campaignActionMatch[3]; // start, pause, stop, reset
+        const action = campaignActionMatch[3];
         const list = await getCampaigns(env);
         const index = list.findIndex(c => String(c.id) === id);
-
-        if (index === -1) {
-            return new Response(JSON.stringify({ success: false, message: 'Chiến dịch không tồn tại' }), {
-                status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders }
-            });
-        }
-
+        if (index === -1) return new Response(JSON.stringify({ success: false, message: 'Chiến dịch không tồn tại' }), { status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
         const campaign = list[index];
 
         if (request.method === 'DELETE') {
             list.splice(index, 1);
             await saveCampaigns(env, list);
-            return new Response(JSON.stringify({ success: true, message: `Đã xóa chiến dịch ${id}` }), {
-                headers: { 'Content-Type': 'application/json', ...corsHeaders }
-            });
+            return new Response(JSON.stringify({ success: true, message: `Đã xóa chiến dịch ${id}` }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
         }
 
         if (request.method === 'PUT') {
             const body = await request.json();
             Object.assign(campaign, body);
             await saveCampaigns(env, list);
-            return new Response(JSON.stringify({ success: true, campaign }), {
-                headers: { 'Content-Type': 'application/json', ...corsHeaders }
-            });
+            return new Response(JSON.stringify({ success: true, campaign }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
         }
 
         if (request.method === 'POST') {
@@ -325,63 +405,44 @@ async function handleFetch(request, env, ctx) {
             } else if (action === 'pause') {
                 campaign.status = 'paused';
             } else if (action === 'stop') {
-                campaign.status = 'stopped';
-                campaign.actualEndTime = Date.now();
+                campaign.status = 'stopped'; campaign.actualEndTime = Date.now();
             } else if (action === 'reset') {
-                campaign.successRequests = 0;
-                campaign.failedRequests = 0;
-                campaign.totalDispatched = 0;
+                campaign.successRequests = 0; campaign.failedRequests = 0; campaign.totalDispatched = 0;
                 campaign.actualEndTime = null;
                 campaign.status = Date.now() >= campaign.startTime ? 'running' : 'waiting';
             }
             await saveCampaigns(env, list);
-            return new Response(JSON.stringify({ success: true, status: campaign.status }), {
-                headers: { 'Content-Type': 'application/json', ...corsHeaders }
-            });
+            return new Response(JSON.stringify({ success: true, status: campaign.status }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
         }
     }
 
-    // Test ping URL
+    // POST /api/test-url
     if (url.pathname === '/api/test-url' && request.method === 'POST') {
         const body = await request.json();
         const result = await executeWorkerRequest(body.url, parseInt(body.timeoutMs, 10) || 5000);
-        return new Response(JSON.stringify(result), {
-            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-        });
+        return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
 
-    // Distribution preview
+    // GET /api/preview-distribution
     if (url.pathname === '/api/preview-distribution') {
         const start = Number(url.searchParams.get('startTime'));
-        const end = Number(url.searchParams.get('endTime'));
+        const end   = Number(url.searchParams.get('endTime'));
         const count = parseInt(url.searchParams.get('targetRequests'), 10) || 100;
-        const mode = url.searchParams.get('mode') || 'smart';
-        const tz = url.searchParams.get('timezoneOffsetMinutes');
-
-        const dist = buildTimeDistribution({
-            startTime: start,
-            endTime: end,
-            targetClicks: count,
-            mode,
-            timezoneOffsetMinutes: hasTimezoneOffset(tz) ? Number(tz) : -420
-        });
-
-        return new Response(JSON.stringify({ success: true, data: dist }), {
-            headers: { 'Content-Type': 'application/json', ...corsHeaders }
-        });
+        const mode  = url.searchParams.get('mode') || 'smart';
+        const tz    = url.searchParams.get('timezoneOffsetMinutes');
+        const dist  = buildTimeDistribution({ startTime: start, endTime: end, targetClicks: count, mode, timezoneOffsetMinutes: hasTimezoneOffset(tz) ? Number(tz) : -420 });
+        return new Response(JSON.stringify({ success: true, data: dist }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
 
-    // ─── Static Asset Serving ─────────────────────────────────────────────────
-    if (env && env.ASSETS) {
-        return env.ASSETS.fetch(request);
-    }
+    // Static assets (dashboard)
+    if (env && env.ASSETS) return env.ASSETS.fetch(request);
 
-    return new Response('Traffic Benchmark Runner - Cloudflare Worker running.', {
-        headers: { 'Content-Type': 'text/plain; charset=utf-8' }
-    });
+    return new Response('Traffic Benchmark Runner - Cloudflare Worker', { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
 }
 
-module.exports = {
+// ─── ES Module Exports ────────────────────────────────────────────────────────
+
+export default {
     fetch: handleFetch,
     scheduled: handleScheduled
 };
