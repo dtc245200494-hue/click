@@ -327,14 +327,21 @@ async function executeBrowserlessJob(url, token, options = {}) {
             };
         }
 
-        const data = await res.json();
+        const raw = await res.json();
+        const payload = (raw && raw.data) ? raw.data : (raw || {});
+        const success = Boolean(payload.success);
+        const statusCode = payload.statusCode || 200;
+        const pageTitle = payload.pageTitle || payload.title || '';
+        const finalUrl = payload.finalUrl || url;
+        const actualLatency = payload.durationMs || latencyMs;
+
         return {
-            success: Boolean(data.success),
-            statusCode: data.statusCode || 200,
-            latencyMs: data.durationMs || latencyMs,
-            error: data.error || (data.success ? null : `HTTP ${data.statusCode}`),
-            pageTitle: data.pageTitle || '',
-            finalUrl: data.finalUrl || url
+            success,
+            statusCode,
+            latencyMs: actualLatency,
+            error: payload.error || (success ? null : `HTTP ${statusCode}`),
+            pageTitle,
+            finalUrl
         };
     } catch (err) {
         const latencyMs = Date.now() - startTime;
