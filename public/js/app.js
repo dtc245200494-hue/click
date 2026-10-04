@@ -293,7 +293,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         ${c.lastError ? `<span class="telemetry-err">[${c.lastError}]</span>` : ''}
                     </div>
                     ${(isBrowser && c.lastPageTitle) ? `
-                    <div class="telemetry-item span-full" style="color: #c084fc; font-size: 12px;">
+                    <div class="telemetry-item span-full item-page-title">
                         <span class="t-label"><i class="fa-solid fa-window-maximize"></i> DOM Page Title:</span>
                         <b class="t-val" style="word-break: break-all; font-weight: 500;">"${escapeHtml(c.lastPageTitle)}"</b>
                     </div>

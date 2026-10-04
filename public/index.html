@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Traffic Benchmark Runner - Siêu Nhẹ & Adaptive Pacing</title>
+    <title>Traffic Benchmark Runner • Liquid Glass Edition</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="stylesheet" href="css/style.css?v=3.0">
+    <link rel="stylesheet" href="css/style.css?v=4.0">
 </head>
 <body>
     <!-- Background Decor -->
@@ -219,7 +219,7 @@
                 <input type="hidden" id="editCampaignId" value="">
 
                 <!-- Locked Campaign Alert Banner -->
-                <div class="locked-banner" id="modalLockedBanner" style="display: none; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: var(--radius-md); padding: 10px 14px; margin-bottom: 14px; color: #fca5a5; font-size: 13px;">
+                <div class="locked-banner" id="modalLockedBanner" style="display: none;">
                     <i class="fa-solid fa-lock"></i> <strong>Chiến dịch đã khởi chạy (Locked):</strong> Các thông số cốt lõi (URL, Target, Chế độ phân bổ, Engine, Proxy, Thời gian) đã bị khóa an toàn để tránh xung đột lịch trình. Nhấn <strong>Reset</strong> ngoài danh sách nếu bạn muốn cấu hình lại từ đầu.
                 </div>
 
@@ -260,13 +260,13 @@
                 </div>
 
                 <!-- Decoupled Proxy / Gateway Manager -->
-                <div class="form-group proxy-config-group" style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 16px;">
-                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                        <label for="inputProxyEnabled" style="cursor: pointer; display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 0;">
-                            <input type="checkbox" id="inputProxyEnabled" style="width: 16px; height: 16px; accent-color: var(--primary);">
+                <div class="form-group proxy-config-group">
+                    <div class="proxy-header-row">
+                        <label for="inputProxyEnabled" class="proxy-label-wrap">
+                            <input type="checkbox" id="inputProxyEnabled">
                             <span><i class="fa-solid fa-shuffle"></i> Xoay vòng Proxy / Gateway</span>
                         </label>
-                        <span class="badge" style="font-size: 11px;">Decoupled Manager</span>
+                        <span class="badge">Decoupled Manager</span>
                     </div>
                     <div id="proxyFieldsWrap" style="display: none; margin-top: 10px;">
                         <div class="form-group" style="margin-bottom: 10px;">
@@ -372,7 +372,7 @@
 
     <!-- Scripts -->
     <script src="/socket.io/socket.io.js" onerror="console.info('Chế độ Serverless / Cloudflare Worker: Socket.IO script không khả dụng, chuyển sang chế độ Live Polling.')"></script>
-    <script src="js/timeDistribution.js?v=3.0"></script>
-    <script src="js/app.js?v=3.0"></script>
+    <script src="js/timeDistribution.js?v=4.0"></script>
+    <script src="js/app.js?v=4.0"></script>
 </body>
 </html>
