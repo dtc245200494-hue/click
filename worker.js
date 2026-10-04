@@ -190,43 +190,29 @@ function calculateAdaptiveNextInterval({ now = Date.now(), endTime, remainingReq
     return { valid: true, timeRemainingMs, remainingRequests, idealIntervalMs: Math.round(idealIntervalMs), jitteredIntervalMs, quotaCurrentSlice: Number(currentSliceQuota.toFixed(2)), currentRatePerHour, currentHour: currentSlice.hour, currentHourWeight: currentSlice.baseW };
 }
 
-// ─── Default Campaign ─────────────────────────────────────────────────────────
+// ─── State & Storage Helpers ──────────────────────────────────────────────────
 
-const DEFAULT_CAMPAIGN = {
-    id: "1",
-    name: "Chiến dịch Benchmark 1",
-    targetUrl: "https://uanbidvak.com",
-    targetRequests: 900,
-    startTime: 1790212260000,
-    endTime: 1790262000000,
-    scheduleMode: "smart",
-    timeoutMs: 8000,
-    maxConcurrent: 3,
-    timezoneOffsetMinutes: -420,
-    maxRetries: 1,
-    status: "waiting",
-    successRequests: 0,
-    failedRequests: 0,
-    totalDispatched: 0,
-    actualStartTime: null,
-    actualEndTime: null,
-    recentLogs: []
-};
+function formatVnTime(ms = Date.now()) {
+    const d = new Date(ms + 7 * 3600000);
+    const hh = String(d.getUTCHours()).padStart(2, '0');
+    const mm = String(d.getUTCMinutes()).padStart(2, '0');
+    const ss = String(d.getUTCSeconds()).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+}
 
-// In-memory fallback when KV binding is not attached
-let memoryCampaigns = new Map([["1", { ...DEFAULT_CAMPAIGN }]]);
-
-// ─── Storage Helpers ──────────────────────────────────────────────────────────
+// In-memory fallback when KV binding is not attached (pure empty map, no hardcoded sample)
+let memoryCampaigns = new Map();
+let lastCronState = null;
 
 async function getCampaigns(env) {
     if (env && env.CAMPAIGNS_KV) {
         try {
             const list = await env.CAMPAIGNS_KV.get('campaigns_list', 'json');
-            if (Array.isArray(list) && list.length > 0) return list;
-            await env.CAMPAIGNS_KV.put('campaigns_list', JSON.stringify([DEFAULT_CAMPAIGN]));
-            return [{ ...DEFAULT_CAMPAIGN }];
+            if (Array.isArray(list)) return list;
+            return [];
         } catch (e) {
             console.error('[KV] Error reading campaigns:', e.message);
+            return [];
         }
     }
     return Array.from(memoryCampaigns.values());
@@ -275,28 +261,46 @@ async function executeWorkerRequest(url, timeoutMs = 8000) {
 
 async function handleScheduled(event, env, ctx) {
     const now = Date.now();
+    const viTime = formatVnTime(now);
     const campaignsList = await getCampaigns(env);
     let changed = false;
+    let totalProcessed = 0;
+    let totalDispatchedInRun = 0;
 
     for (const c of campaignsList) {
         if (['stopped', 'completed', 'expired', 'paused'].includes(c.status)) continue;
 
         if (c.status === 'waiting') {
-            if (now >= c.startTime) { c.status = 'running'; c.actualStartTime = now; changed = true; }
-            else continue;
+            if (now >= c.startTime) {
+                c.status = 'running';
+                c.actualStartTime = now;
+                changed = true;
+            } else {
+                continue;
+            }
         }
 
         if (now >= c.endTime) {
-            c.status = c.successRequests >= c.targetRequests ? 'completed' : 'expired';
-            c.actualEndTime = now; changed = true; continue;
+            c.status = (c.successRequests || 0) >= c.targetRequests ? 'completed' : 'expired';
+            c.actualEndTime = now;
+            changed = true;
+            continue;
         }
 
         const remaining = c.targetRequests - (c.successRequests || 0);
-        if (remaining <= 0) { c.status = 'completed'; c.actualEndTime = now; changed = true; continue; }
+        if (remaining <= 0) {
+            c.status = 'completed';
+            c.actualEndTime = now;
+            changed = true;
+            continue;
+        }
 
         const adaptive = calculateAdaptiveNextInterval({
-            now, endTime: c.endTime, remainingRequests: remaining,
-            mode: c.scheduleMode || 'smart', timezoneOffsetMinutes: c.timezoneOffsetMinutes
+            now,
+            endTime: c.endTime,
+            remainingRequests: remaining,
+            mode: c.scheduleMode || 'smart',
+            timezoneOffsetMinutes: c.timezoneOffsetMinutes
         });
         if (!adaptive.valid) continue;
 
@@ -306,22 +310,72 @@ async function handleScheduled(event, env, ctx) {
         minuteQuota = Math.min(remaining, Math.max(1, minuteQuota));
         const maxBatch = Math.min(minuteQuota, c.maxConcurrent || 3, 5);
 
+        totalProcessed++;
+
         for (let i = 0; i < maxBatch; i++) {
-            if (c.successRequests >= c.targetRequests) break;
+            if ((c.successRequests || 0) >= c.targetRequests) break;
+
             const res = await executeWorkerRequest(c.targetUrl, c.timeoutMs || 8000);
+            const reqNow = Date.now();
+            const reqViTime = formatVnTime(reqNow);
+
             c.totalDispatched = (c.totalDispatched || 0) + 1;
-            if (res.success) c.successRequests = (c.successRequests || 0) + 1;
-            else c.failedRequests = (c.failedRequests || 0) + 1;
+            totalDispatchedInRun++;
+
+            if (res.success) {
+                c.successRequests = (c.successRequests || 0) + 1;
+            } else {
+                c.failedRequests = (c.failedRequests || 0) + 1;
+            }
+
+            c.lastCronRun = now;
+            c.lastCronRunText = viTime;
+            c.lastRequestTime = reqNow;
+            c.lastRequestText = reqViTime;
+            c.lastStatusCode = res.statusCode;
+            c.lastLatencyMs = res.latencyMs;
+            c.lastError = res.error || null;
+
             if (!Array.isArray(c.recentLogs)) c.recentLogs = [];
-            c.recentLogs.push({ timestamp: new Date().toLocaleTimeString('vi-VN'), statusCode: res.statusCode, latencyMs: res.latencyMs, success: res.success, text: res.success ? `[${res.statusCode} OK] ${c.targetUrl} (${res.latencyMs}ms)` : `[Lỗi] ${res.error} (${res.latencyMs}ms)` });
+            c.recentLogs.push({
+                timestamp: reqViTime,
+                statusCode: res.statusCode,
+                latencyMs: res.latencyMs,
+                success: res.success,
+                text: res.success
+                    ? `[${res.statusCode} OK] ${c.targetUrl} (${res.latencyMs}ms)`
+                    : `[Lỗi] ${res.error} (${res.latencyMs}ms)`
+            });
             if (c.recentLogs.length > 30) c.recentLogs.shift();
             changed = true;
         }
 
-        if (c.successRequests >= c.targetRequests) { c.status = 'completed'; c.actualEndTime = now; changed = true; }
+        if ((c.successRequests || 0) >= c.targetRequests) {
+            c.status = 'completed';
+            c.actualEndTime = now;
+            changed = true;
+        }
     }
 
-    if (changed) await saveCampaigns(env, campaignsList);
+    if (changed) {
+        await saveCampaigns(env, campaignsList);
+    }
+
+    // Save Cron metadata to KV for live health check
+    const cronMeta = {
+        timestamp: now,
+        timeText: viTime,
+        status: 'ok',
+        campaignsProcessed: totalProcessed,
+        requestsDispatched: totalDispatchedInRun
+    };
+    lastCronState = cronMeta;
+
+    if (env && env.CAMPAIGNS_KV) {
+        try {
+            await env.CAMPAIGNS_KV.put('system:last_cron', JSON.stringify(cronMeta));
+        } catch (_) {}
+    }
 }
 
 // ─── Fetch Handler (API + Static Assets) ─────────────────────────────────────
@@ -336,6 +390,42 @@ async function handleFetch(request, env, ctx) {
 
     if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
 
+    // GET /api/health - Check Worker, Cron status, Storage & Scheduler
+    if (url.pathname === '/api/health' && request.method === 'GET') {
+        let cronMeta = lastCronState;
+        if (env && env.CAMPAIGNS_KV) {
+            try {
+                const stored = await env.CAMPAIGNS_KV.get('system:last_cron', 'json');
+                if (stored) cronMeta = stored;
+            } catch (_) {}
+        }
+
+        const now = Date.now();
+        const diffSec = (cronMeta && cronMeta.timestamp) ? Math.round((now - cronMeta.timestamp) / 1000) : null;
+        let cronStatus = 'never';
+        if (diffSec !== null) {
+            if (diffSec <= 150) cronStatus = 'active';
+            else cronStatus = 'delayed';
+        }
+
+        const list = await getCampaigns(env);
+        const runningCampaigns = list.filter(c => c.status === 'running').length;
+
+        return new Response(JSON.stringify({
+            worker: 'ok',
+            status: 'healthy',
+            storage: (env && env.CAMPAIGNS_KV) ? 'connected' : 'memory',
+            lastCronRun: cronMeta ? cronMeta.timestamp : null,
+            lastCronRunText: cronMeta ? cronMeta.timeText : 'Chưa chạy (Never)',
+            cronSecondsAgo: diffSec,
+            cronStatus,
+            totalCampaigns: list.length,
+            runningCampaigns,
+            serverTime: now,
+            serverTimeText: formatVnTime(now)
+        }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+    }
+
     // GET /api/campaigns
     if (url.pathname === '/api/campaigns' && request.method === 'GET') {
         const list = await getCampaigns(env);
@@ -347,6 +437,43 @@ async function handleFetch(request, env, ctx) {
         return new Response(JSON.stringify({ success: true, data: enriched }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
 
+    // POST /api/campaigns/sample (Tạo chiến dịch mẫu chạy ngay hôm nay)
+    if (url.pathname === '/api/campaigns/sample' && request.method === 'POST') {
+        const list = await getCampaigns(env);
+        const nextId = String(list.reduce((max, c) => Math.max(max, parseInt(c.id, 10) || 0), 0) + 1);
+        const now = Date.now();
+        const sample = {
+            id: nextId,
+            name: `Chiến dịch Mẫu ${nextId} (${formatVnTime(now)})`,
+            targetUrl: 'https://uanbidvak.com',
+            targetRequests: 200,
+            startTime: now,
+            endTime: now + 2 * 3600000,
+            scheduleMode: 'smart',
+            timeoutMs: 8000,
+            maxConcurrent: 3,
+            timezoneOffsetMinutes: -420,
+            maxRetries: 1,
+            status: 'running',
+            successRequests: 0,
+            failedRequests: 0,
+            totalDispatched: 0,
+            lastCronRun: null,
+            lastCronRunText: null,
+            lastRequestTime: null,
+            lastRequestText: null,
+            lastStatusCode: null,
+            lastLatencyMs: null,
+            lastError: null,
+            actualStartTime: now,
+            actualEndTime: null,
+            recentLogs: []
+        };
+        list.push(sample);
+        await saveCampaigns(env, list);
+        return new Response(JSON.stringify({ success: true, id: nextId, campaign: sample }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+    }
+
     // POST /api/campaigns
     if (url.pathname === '/api/campaigns' && request.method === 'POST') {
         try {
@@ -356,16 +483,31 @@ async function handleFetch(request, env, ctx) {
             const list = await getCampaigns(env);
             const nextId = String(list.reduce((max, c) => Math.max(max, parseInt(c.id, 10) || 0), 0) + 1);
             const newCampaign = {
-                id: nextId, name: body.name || `Chiến dịch ${nextId}`,
-                targetUrl: body.targetUrl, targetRequests: parseInt(body.targetRequests, 10) || 100,
-                startTime: Number(body.startTime) || Date.now(), endTime: Number(body.endTime) || (Date.now() + 6 * 3600000),
+                id: nextId,
+                name: body.name || `Chiến dịch ${nextId}`,
+                targetUrl: body.targetUrl,
+                targetRequests: parseInt(body.targetRequests, 10) || 100,
+                startTime: Number(body.startTime) || Date.now(),
+                endTime: Number(body.endTime) || (Date.now() + 6 * 3600000),
                 scheduleMode: body.scheduleMode === 'even' ? 'even' : 'smart',
                 timeoutMs: parseInt(body.timeoutMs, 10) || 8000,
                 maxConcurrent: Math.max(1, Math.min(20, parseInt(body.maxConcurrent, 10) || 3)),
                 timezoneOffsetMinutes: hasTimezoneOffset(body.timezoneOffsetMinutes) ? Number(body.timezoneOffsetMinutes) : -420,
-                maxRetries: 1, status: (Number(body.startTime) || Date.now()) <= Date.now() ? 'running' : 'waiting',
-                successRequests: 0, failedRequests: 0, totalDispatched: 0,
-                actualStartTime: Date.now(), actualEndTime: null, recentLogs: []
+                maxRetries: 1,
+                status: (Number(body.startTime) || Date.now()) <= Date.now() ? 'running' : 'waiting',
+                successRequests: 0,
+                failedRequests: 0,
+                totalDispatched: 0,
+                lastCronRun: null,
+                lastCronRunText: null,
+                lastRequestTime: null,
+                lastRequestText: null,
+                lastStatusCode: null,
+                lastLatencyMs: null,
+                lastError: null,
+                actualStartTime: Date.now(),
+                actualEndTime: null,
+                recentLogs: []
             };
             list.push(newCampaign);
             await saveCampaigns(env, list);
@@ -405,10 +547,21 @@ async function handleFetch(request, env, ctx) {
             } else if (action === 'pause') {
                 campaign.status = 'paused';
             } else if (action === 'stop') {
-                campaign.status = 'stopped'; campaign.actualEndTime = Date.now();
+                campaign.status = 'stopped';
+                campaign.actualEndTime = Date.now();
             } else if (action === 'reset') {
-                campaign.successRequests = 0; campaign.failedRequests = 0; campaign.totalDispatched = 0;
+                campaign.successRequests = 0;
+                campaign.failedRequests = 0;
+                campaign.totalDispatched = 0;
+                campaign.lastCronRun = null;
+                campaign.lastCronRunText = null;
+                campaign.lastRequestTime = null;
+                campaign.lastRequestText = null;
+                campaign.lastStatusCode = null;
+                campaign.lastLatencyMs = null;
+                campaign.lastError = null;
                 campaign.actualEndTime = null;
+                campaign.recentLogs = [];
                 campaign.status = Date.now() >= campaign.startTime ? 'running' : 'waiting';
             }
             await saveCampaigns(env, list);

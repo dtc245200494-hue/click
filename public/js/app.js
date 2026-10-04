@@ -227,36 +227,49 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 </div>
 
+                <!-- Live Subrequest Telemetry Box -->
+                <div class="campaign-telemetry-box">
+                    <div class="telemetry-item">
+                        <span class="t-label"><i class="fa-solid fa-paper-plane"></i> Tổng HTTP đã gửi:</span>
+                        <b class="t-val val-dispatched" id="stat-disp-${c.id}">${c.totalDispatched || 0}</b>
+                    </div>
+                    <div class="telemetry-item">
+                        <span class="t-label"><i class="fa-solid fa-circle-check"></i> Thành công:</span>
+                        <b class="t-val val-success" id="stat-succ-${c.id}">${c.successRequests || 0}</b>
+                    </div>
+                    <div class="telemetry-item">
+                        <span class="t-label"><i class="fa-solid fa-circle-xmark"></i> Thất bại:</span>
+                        <b class="t-val val-failed" id="stat-fail-${c.id}">${c.failedRequests || 0}</b>
+                    </div>
+                    <div class="telemetry-item">
+                        <span class="t-label"><i class="fa-solid fa-clock-rotate-left"></i> Cron cuối:</span>
+                        <b class="t-val" id="stat-cron-${c.id}">${c.lastCronRunText || 'Chờ đợt tới...'}</b>
+                    </div>
+                    <div class="telemetry-item span-full">
+                        <span class="t-label"><i class="fa-solid fa-bolt"></i> Request cuối:</span>
+                        <b class="t-val ${c.lastStatusCode && c.lastStatusCode >= 400 ? 'val-failed' : 'val-success'}" id="stat-req-${c.id}">
+                            ${c.lastRequestText ? `${c.lastRequestText} (HTTP ${c.lastStatusCode || '--'} • ${c.lastLatencyMs || '--'}ms)` : 'Chưa gửi'}
+                        </b>
+                        ${c.lastError ? `<span class="telemetry-err">[${c.lastError}]</span>` : ''}
+                    </div>
+                </div>
+
                 <div class="campaign-stats-pill-grid">
                     <div class="stat-pill">
                         <span class="stat-pill-label">Mục tiêu</span>
                         <span class="stat-pill-val val-target">${c.targetRequests}</span>
                     </div>
                     <div class="stat-pill">
-                        <span class="stat-pill-label">Thành công</span>
-                        <span class="stat-pill-val val-success" id="stat-succ-${c.id}">${c.successRequests || 0}</span>
+                        <span class="stat-pill-label">Luồng song song</span>
+                        <span class="stat-pill-val val-workers" id="stat-workers-${c.id}">${c.maxConcurrent || 3} luồng</span>
                     </div>
                     <div class="stat-pill">
-                        <span class="stat-pill-label">Thất bại</span>
-                        <span class="stat-pill-val val-failed" id="stat-fail-${c.id}">${c.failedRequests || 0}</span>
+                        <span class="stat-pill-label">Thời gian còn</span>
+                        <span class="stat-pill-val" id="meta-time-left-${c.id}">Đang tính...</span>
                     </div>
                     <div class="stat-pill">
-                        <span class="stat-pill-label">Tổng đã gửi</span>
-                        <span class="stat-pill-val val-dispatched" id="stat-disp-${c.id}">${c.totalDispatched || 0}</span>
-                    </div>
-                    <div class="stat-pill">
-                        <span class="stat-pill-label">Đang xử lý</span>
-                        <span class="stat-pill-val val-workers" id="stat-workers-${c.id}">0 / ${c.maxConcurrent || 3}</span>
-                    </div>
-                </div>
-
-                <div class="campaign-meta-row">
-                    <div class="meta-time">
-                        <i class="fa-regular fa-clock"></i>
-                        <span id="meta-time-left-${c.id}">Đang tính...</span>
-                    </div>
-                    <div class="meta-pace" id="meta-pace-${c.id}">
-                        Nhịp độ: -- req/h
+                        <span class="stat-pill-label">Nhịp độ ước tính</span>
+                        <span class="stat-pill-val" id="meta-pace-${c.id}">-- req/h</span>
                     </div>
                 </div>
 
@@ -265,10 +278,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         ? `<button class="btn btn-sm btn-warning btn-pause" data-id="${c.id}"><i class="fa-solid fa-pause"></i> Tạm dừng</button>`
                         : `<button class="btn btn-sm btn-success btn-start" data-id="${c.id}"><i class="fa-solid fa-play"></i> Bắt đầu</button>`
                     }
-                    <button class="btn btn-sm btn-secondary btn-reset" data-id="${c.id}"><i class="fa-solid fa-rotate-left"></i> Reset</button>
+                    <button class="btn btn-sm btn-secondary btn-reset" data-id="${c.id}" title="Reset số liệu về 0"><i class="fa-solid fa-rotate-left"></i> Reset</button>
                     <button class="btn btn-sm btn-secondary btn-chart" data-id="${c.id}"><i class="fa-solid fa-chart-simple"></i> Biểu đồ</button>
                     <button class="btn btn-sm btn-secondary btn-edit" data-id="${c.id}"><i class="fa-solid fa-pen"></i> Sửa</button>
-                    <button class="btn btn-sm btn-danger btn-delete" data-id="${c.id}"><i class="fa-solid fa-trash"></i></button>
+                    <button class="btn btn-sm btn-danger btn-delete" data-id="${c.id}"><i class="fa-solid fa-trash"></i> Xóa</button>
                 </div>
             `;
 
@@ -342,7 +355,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 try {
                     const res = await fetch(`/api/campaigns/${id}`, { method: 'DELETE' });
                     const d = await res.json();
-                    if (d.success) showToast(`Đã xóa chiến dịch ${id}`, 'info');
+                    if (d.success) {
+                        showToast(`Đã xóa chiến dịch ${id}`, 'info');
+                        await loadCampaigns();
+                        if (typeof pollSystemHealth === 'function') pollSystemHealth();
+                    }
                 } catch (e) { showToast('Lỗi xóa chiến dịch', 'error'); }
             };
         });
@@ -751,6 +768,94 @@ document.addEventListener('DOMContentLoaded', () => {
             .replace(/"/g, '&quot;');
     }
 
+    // ─── Sample Campaign Creator ──────────────────────────────────────────────────
+    async function createSampleCampaign() {
+        try {
+            const res = await fetch('/api/campaigns/sample', { method: 'POST' });
+            const d = await res.json();
+            if (d.success) {
+                showToast('Đã tạo chiến dịch mẫu hôm nay thành công!', 'success');
+                await loadCampaigns();
+                pollSystemHealth();
+            } else {
+                showToast(d.message || 'Lỗi tạo chiến dịch mẫu', 'error');
+            }
+        } catch (e) {
+            showToast('Lỗi gửi request tạo mẫu', 'error');
+        }
+    }
+
+    const btnQuickSample = document.getElementById('btnQuickSample');
+    if (btnQuickSample) btnQuickSample.onclick = createSampleCampaign;
+
+    const btnEmptySample = document.getElementById('btnEmptySample');
+    if (btnEmptySample) btnEmptySample.onclick = createSampleCampaign;
+
+    // ─── System Health & Cron Polling ─────────────────────────────────────────────
+    async function pollSystemHealth() {
+        try {
+            const res = await fetch('/api/health');
+            if (!res.ok) return;
+            const data = await res.json();
+
+            const healthWorkerVal = document.getElementById('healthWorkerVal');
+            const healthCronVal = document.getElementById('healthCronVal');
+            const healthCronDot = document.getElementById('healthCronDot');
+            const healthStorageVal = document.getElementById('healthStorageVal');
+            const healthStorageDot = document.getElementById('healthStorageDot');
+            const healthSchedulerVal = document.getElementById('healthSchedulerVal');
+            const healthSchedulerDot = document.getElementById('healthSchedulerDot');
+            const healthServerTimeVal = document.getElementById('healthServerTimeVal');
+
+            if (healthWorkerVal) healthWorkerVal.textContent = '🟢 Online';
+            if (healthServerTimeVal && data.serverTimeText) healthServerTimeVal.textContent = data.serverTimeText;
+
+            // Cron status
+            if (healthCronVal && healthCronDot) {
+                if (data.cronStatus === 'never' || !data.lastCronRun) {
+                    healthCronVal.textContent = '🔴 Chưa chạy (Never)';
+                    healthCronVal.className = 'chip-val status-val-never';
+                    healthCronDot.className = 'pulse-indicator offline';
+                } else if (data.cronStatus === 'active') {
+                    const ago = data.cronSecondsAgo !== null ? `${data.cronSecondsAgo}s trước` : '';
+                    healthCronVal.textContent = `🟢 ${data.lastCronRunText} (${ago})`;
+                    healthCronVal.className = 'chip-val status-val-ok';
+                    healthCronDot.className = 'pulse-indicator online';
+                } else {
+                    healthCronVal.textContent = `🟡 ${data.lastCronRunText} (${data.cronSecondsAgo}s trước)`;
+                    healthCronVal.className = 'chip-val status-val-warn';
+                    healthCronDot.className = 'pulse-indicator waiting';
+                }
+            }
+
+            // Storage status
+            if (healthStorageVal && healthStorageDot) {
+                if (data.storage === 'connected') {
+                    healthStorageVal.textContent = '🟢 KV Connected';
+                    healthStorageDot.className = 'pulse-indicator online';
+                } else {
+                    healthStorageVal.textContent = '🟡 Memory fallback';
+                    healthStorageDot.className = 'pulse-indicator waiting';
+                }
+            }
+
+            // Scheduler status
+            if (healthSchedulerVal && healthSchedulerDot) {
+                if (data.runningCampaigns > 0) {
+                    healthSchedulerVal.textContent = `🟢 Active (${data.runningCampaigns} đang chạy)`;
+                    healthSchedulerDot.className = 'pulse-indicator online';
+                } else {
+                    healthSchedulerVal.textContent = `⚪ Idle (0 đang chạy)`;
+                    healthSchedulerDot.className = 'pulse-indicator idle';
+                }
+            }
+        } catch (e) {
+            console.warn('Lỗi kiểm tra health:', e);
+        }
+    }
+
     // Initialize
     loadCampaigns();
+    pollSystemHealth();
+    setInterval(pollSystemHealth, 5000);
 });

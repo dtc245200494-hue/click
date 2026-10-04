@@ -34,11 +34,43 @@
                     <span class="status-dot"></span>
                     <span class="status-label">Kết nối Live</span>
                 </div>
+                <button class="btn btn-secondary" id="btnQuickSample" title="Tạo chiến dịch mẫu test ngay hôm nay (04/10/2026)">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i> Mẫu hôm nay
+                </button>
                 <button class="btn btn-primary" id="btnOpenCreateModal">
                     <i class="fa-solid fa-plus"></i> Tạo chiến dịch
                 </button>
             </div>
         </header>
+
+        <!-- System Health Bar (Cloudflare Worker & Cron Monitor) -->
+        <section class="system-health-bar" id="systemHealthBar">
+            <div class="health-chip" id="chipWorker">
+                <span class="pulse-indicator online"></span>
+                <span class="chip-label">Worker:</span>
+                <span class="chip-val status-val-ok" id="healthWorkerVal">🟢 Online</span>
+            </div>
+            <div class="health-chip" id="chipCron">
+                <span class="pulse-indicator waiting" id="healthCronDot"></span>
+                <span class="chip-label">Cron:</span>
+                <span class="chip-val" id="healthCronVal">Đang kiểm tra...</span>
+            </div>
+            <div class="health-chip" id="chipStorage">
+                <span class="pulse-indicator online" id="healthStorageDot"></span>
+                <span class="chip-label">Storage:</span>
+                <span class="chip-val status-val-ok" id="healthStorageVal">🟢 KV Connected</span>
+            </div>
+            <div class="health-chip" id="chipScheduler">
+                <span class="pulse-indicator online" id="healthSchedulerDot"></span>
+                <span class="chip-label">Scheduler:</span>
+                <span class="chip-val status-val-ok" id="healthSchedulerVal">Active</span>
+            </div>
+            <div class="health-chip chip-time" id="chipServerTime">
+                <i class="fa-regular fa-clock"></i>
+                <span class="chip-label">Giờ VN:</span>
+                <span class="chip-val" id="healthServerTimeVal">--:--:--</span>
+            </div>
+        </section>
 
         <!-- Global Summary Metrics -->
         <section class="overview-grid">
@@ -110,9 +142,14 @@
                         <i class="fa-solid fa-rocket"></i>
                         <h3>Chưa có chiến dịch nào</h3>
                         <p>Tạo chiến dịch mới để bắt đầu benchmark HTTP với thuật toán chia đều (Even) hoặc thông minh (Smart).</p>
-                        <button class="btn btn-primary" id="btnEmptyCreate">
-                            <i class="fa-solid fa-plus"></i> Tạo chiến dịch đầu tiên
-                        </button>
+                        <div style="display: flex; gap: 12px; margin-top: 14px; flex-wrap: wrap; justify-content: center;">
+                            <button class="btn btn-primary" id="btnEmptyCreate">
+                                <i class="fa-solid fa-plus"></i> Tạo chiến dịch mới
+                            </button>
+                            <button class="btn btn-secondary" id="btnEmptySample">
+                                <i class="fa-solid fa-wand-magic-sparkles"></i> Thêm chiến dịch mẫu (Chạy hôm nay)
+                            </button>
+                        </div>
                     </div>
                 </div>
             </section>
