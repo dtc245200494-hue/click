@@ -1,1 +1,229 @@
-<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Đăng nhập</title><link rel="stylesheet" href="/style.css"></head><body><main class="login-wrap"><section class="card login-card"><h1>Đăng nhập hệ thống</h1><form id="login-form"><label>Tài khoản<input id="username" autocomplete="username" required></label><label>Mật khẩu<input id="password" type="password" autocomplete="current-password" required></label><button>Đăng nhập</button><p id="login-error" class="error"></p></form></section></main><script src="/login.js"></script></body></html>
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dang nhap - Traffic Control System</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        :root {
+            --primary: #6366f1; --primary-dark: #4f46e5;
+            --accent: #22d3ee; --danger: #ef4444;
+            --bg: #050811; --card-bg: rgba(15, 20, 40, 0.88);
+            --border: rgba(99,102,241,0.25); --text: #e2e8f0; --text-muted: #64748b;
+            --radius: 16px;
+        }
+        body {
+            font-family: 'Outfit', sans-serif;
+            background: var(--bg); color: var(--text);
+            min-height: 100vh;
+            display: flex; align-items: center; justify-content: center;
+            overflow: hidden;
+        }
+        .bg-scene { position: fixed; inset: 0; z-index: 0; overflow: hidden; }
+        .bg-grid {
+            position: absolute; inset: 0;
+            background-image: linear-gradient(rgba(99,102,241,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(99,102,241,0.05) 1px, transparent 1px);
+            background-size: 48px 48px;
+        }
+        .orb { position: absolute; border-radius: 50%; filter: blur(80px); animation: orbFloat 8s ease-in-out infinite alternate; }
+        .orb-1 { width: 500px; height: 500px; background: radial-gradient(circle, rgba(99,102,241,0.2), transparent 70%); top: -200px; left: -200px; }
+        .orb-2 { width: 400px; height: 400px; background: radial-gradient(circle, rgba(34,211,238,0.13), transparent 70%); bottom: -150px; right: -150px; animation-delay: -4s; }
+        .orb-3 { width: 300px; height: 300px; background: radial-gradient(circle, rgba(139,92,246,0.1), transparent 70%); top: 50%; left: 50%; transform: translate(-50%,-50%); animation-delay: -2s; }
+        @keyframes orbFloat { from { transform: translate(0,0) scale(1); } to { transform: translate(30px,20px) scale(1.06); } }
+        .particles { position: absolute; inset: 0; pointer-events: none; }
+        .particle { position: absolute; border-radius: 50%; opacity: 0; animation: particleFly linear infinite; }
+        @keyframes particleFly {
+            0% { opacity: 0; transform: translateY(0) scale(0); }
+            10% { opacity: 0.8; } 90% { opacity: 0.3; }
+            100% { opacity: 0; transform: translateY(-120vh) scale(2); }
+        }
+        .login-wrapper {
+            position: relative; z-index: 10;
+            width: 100%; max-width: 440px; padding: 20px;
+            animation: slideUp 0.6s cubic-bezier(0.16,1,0.3,1) both;
+        }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(40px); } to { opacity: 1; transform: translateY(0); } }
+        .login-card {
+            background: var(--card-bg); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 40px 36px;
+            backdrop-filter: blur(20px);
+            box-shadow: 0 0 0 1px rgba(99,102,241,0.1), 0 30px 60px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.05);
+        }
+        .login-logo { text-align: center; margin-bottom: 32px; }
+        .logo-icon-wrap {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 72px; height: 72px;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            border-radius: 20px; margin-bottom: 16px;
+            box-shadow: 0 0 30px rgba(99,102,241,0.4), 0 0 60px rgba(99,102,241,0.15);
+            animation: iconPulse 3s ease-in-out infinite;
+        }
+        .logo-icon-wrap i { font-size: 32px; color: #fff; }
+        @keyframes iconPulse {
+            0%,100% { box-shadow: 0 0 30px rgba(99,102,241,0.4), 0 0 60px rgba(99,102,241,0.15); }
+            50% { box-shadow: 0 0 45px rgba(99,102,241,0.6), 0 0 80px rgba(99,102,241,0.3); }
+        }
+        .login-logo h1 {
+            font-size: 22px; font-weight: 800; letter-spacing: -0.3px;
+            background: linear-gradient(135deg, #fff 30%, var(--accent));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 6px;
+        }
+        .login-logo .subtitle { color: var(--text-muted); font-size: 13px; }
+        .live-clock { margin-top: 10px; font-size: 12px; color: rgba(99,102,241,0.85); font-weight: 500; letter-spacing: 0.5px; }
+        .form-group { margin-bottom: 18px; }
+        label { display: block; font-size: 13px; font-weight: 600; color: #94a3b8; margin-bottom: 8px; }
+        label i { margin-right: 6px; font-size: 12px; }
+        .input-wrap { position: relative; }
+        input[type="text"], input[type="password"] {
+            width: 100%; background: rgba(255,255,255,0.04); border: 1px solid rgba(99,102,241,0.2);
+            border-radius: 12px; padding: 14px 18px; font-size: 15px; font-family: 'Outfit', sans-serif;
+            color: var(--text); outline: none; transition: all 0.25s ease;
+        }
+        input:focus { border-color: var(--primary); background: rgba(99,102,241,0.07); box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
+        input::placeholder { color: var(--text-muted); font-size: 14px; }
+        .toggle-pw {
+            position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+            background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 15px;
+            padding: 4px; transition: color 0.2s;
+        }
+        .toggle-pw:hover { color: var(--primary); }
+        .error-box {
+            display: none; align-items: center; gap: 10px;
+            background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3);
+            color: #fca5a5; border-radius: 12px; padding: 12px 16px;
+            margin-bottom: 20px; font-size: 13.5px; font-weight: 500;
+        }
+        .error-box.shake { animation: shake 0.4s ease; }
+        @keyframes shake {
+            0%,100% { transform: translateX(0); } 20% { transform: translateX(-6px); }
+            40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); }
+        }
+        .btn-login {
+            width: 100%; padding: 15px;
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            border: none; border-radius: 12px; color: #fff; font-size: 15px; font-weight: 700;
+            font-family: 'Outfit', sans-serif; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; gap: 10px;
+            margin-top: 8px; transition: all 0.25s ease;
+            box-shadow: 0 4px 20px rgba(99,102,241,0.35);
+        }
+        .btn-login:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(99,102,241,0.5); }
+        .btn-login:active:not(:disabled) { transform: translateY(0); }
+        .btn-login:disabled { opacity: 0.7; cursor: not-allowed; }
+        .divider {
+            text-align: center; margin: 24px 0 0; color: var(--text-muted); font-size: 12px;
+            display: flex; align-items: center; gap: 12px;
+        }
+        .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: rgba(255,255,255,0.06); }
+        .version-badge { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 16px; font-size: 11px; color: var(--text-muted); }
+        .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 6px #22c55e; animation: blink 2s ease-in-out infinite; }
+        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    </style>
+</head>
+<body>
+    <div class="bg-scene">
+        <div class="bg-grid"></div>
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+        <div class="particles" id="particles"></div>
+    </div>
+
+    <div class="login-wrapper">
+        <div class="login-card">
+            <div class="login-logo">
+                <div class="logo-icon-wrap"><i class="fa-solid fa-bolt-lightning"></i></div>
+                <h1>Traffic Control System</h1>
+                <div class="subtitle">He thong dieu khien click link tu dong</div>
+                <div class="live-clock" id="live-clock">--:--:--</div>
+            </div>
+
+            <div class="error-box" id="error-box">
+                <i class="fa-solid fa-triangle-exclamation"></i>
+                <span id="error-text">Tai khoan hoac mat khau khong chinh xac.</span>
+            </div>
+
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="username"><i class="fa-solid fa-user-shield"></i> Ten dang nhap</label>
+                    <input type="text" id="username" placeholder="Nhap tai khoan admin" required autofocus autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label for="password"><i class="fa-solid fa-lock"></i> Mat khau</label>
+                    <div class="input-wrap">
+                        <input type="password" id="password" placeholder="Nhap mat khau" required autocomplete="current-password" style="padding-right: 48px;">
+                        <button type="button" class="toggle-pw" id="toggle-pw" tabindex="-1">
+                            <i class="fa-solid fa-eye" id="pw-icon"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #94a3b8; cursor: pointer; margin-bottom: 0; user-select: none;">
+                        <input type="checkbox" id="remember-me" checked style="accent-color: #6366f1; width: 16px; height: 16px; cursor: pointer;">
+                        <span>Ghi nho mat khau</span>
+                    </label>
+                </div>
+                <button type="submit" class="btn-login" id="login-btn">
+                    <i class="fa-solid fa-right-to-bracket" id="login-icon"></i>
+                    <span id="login-text">Dang nhap he thong</span>
+                </button>
+            </form>
+
+            <div class="divider">He thong bao mat</div>
+            <div class="version-badge">
+                <div class="badge-dot"></div>
+                <span>Traffic Tool v2.0 &bull; Server Online</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/login.js"></script>
+    <script>
+        // Live clock
+        function updateClock() {
+            var clockEl = document.getElementById('live-clock');
+            if (clockEl) clockEl.textContent = new Date().toLocaleString('vi-VN');
+        }
+        updateClock(); setInterval(updateClock, 1000);
+
+        // Password toggle
+        var pwInput = document.getElementById('password');
+        var pwIcon = document.getElementById('pw-icon');
+        var togglePwBtn = document.getElementById('toggle-pw');
+        if (togglePwBtn && pwInput && pwIcon) {
+            togglePwBtn.addEventListener('click', function() {
+                var isText = pwInput.type === 'text';
+                pwInput.type = isText ? 'password' : 'text';
+                pwIcon.className = isText ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
+            });
+        }
+
+        // Lightweight background particles (max 8)
+        var pc = document.getElementById('particles');
+        if (pc) {
+            function createParticle() {
+                if (pc.children.length > 8) return;
+                var p = document.createElement('div');
+                p.className = 'particle';
+                p.style.left = (Math.random() * 100) + 'vw';
+                p.style.bottom = '-10px';
+                var dur = 7 + Math.random() * 8;
+                p.style.animationDuration = dur + 's';
+                var size = 2 + Math.random() * 3;
+                p.style.width = p.style.height = size + 'px';
+                var colors = ['#6366f1','#22d3ee','#8b5cf6','#a78bfa'];
+                p.style.background = colors[Math.floor(Math.random() * colors.length)];
+                pc.appendChild(p);
+                setTimeout(function() { p.remove(); }, (dur + 1) * 1000);
+            }
+            setInterval(createParticle, 1500);
+            for (var i = 0; i < 4; i++) { createParticle(); }
+        }
+    </script>
+</body>
+</html>

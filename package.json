@@ -1,19 +1,20 @@
 {
-  "name": "scheduled-loadtest-dashboard",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "Scheduled HTTP load-test dashboard derived from ideas in alexfernandez/loadtest, with campaign scheduling and capped concurrency.",
-  "license": "MIT",
+  "name": "xoay-click-link",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/all.js"
+    "test": "node test_distribution.js"
   },
-  "engines": {
-    "node": ">=18"
-  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
   "dependencies": {
+    "axios": "^1.19.0",
     "express": "^5.2.1",
+    "playwright": "^1.62.1",
     "socket.io": "^4.8.3"
   }
 }
