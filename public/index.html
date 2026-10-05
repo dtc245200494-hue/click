@@ -1,66 +1,414 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="vi">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Campaign Scheduler Dashboard</title>
-  <link rel="stylesheet" href="/style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Traffic Benchmark Runner • Liquid Glass Edition</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="css/style.css?v=4.0">
 </head>
 <body>
-  <main class="wrap">
-    <header>
-      <div>
-        <h1>Campaign Scheduler Dashboard</h1>
-        <p>Smart · Đồng đều · Custom · Worker pool · Persist trạng thái</p>
-      </div>
-      <div class="header-actions"><span id="user-badge" class="badge">...</span><button id="logout" class="secondary compact">Đăng xuất</button></div>
-    </header>
+    <!-- Background Decor -->
+    <div class="background-grid"></div>
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
 
-    <section id="create-card" class="card">
-      <h2>Tạo campaign</h2>
-      <form id="campaign-form">
-        <div class="grid">
-          <label>Tên<input id="name" placeholder="VD: staging morning"></label>
-          <label>Target URL<input id="targetUrl" type="url" value="http://127.0.0.1:3005/__local_test_target" required></label>
-          <label>Bắt đầu<input id="startTime" type="datetime-local" required></label>
-          <label>Kết thúc<input id="endTime" type="datetime-local" required></label>
-          <label>Tổng request<input id="targetRequests" type="number" min="1" value="750" required></label>
-          <label>Concurrency<input id="concurrency" type="number" min="1" value="10" required></label>
-          <label>Chế độ
-            <select id="mode"><option value="smart">Smart</option><option value="even">Đồng đều</option><option value="custom">Custom</option></select>
-          </label>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="navbar">
+            <div class="brand">
+                <div class="brand-icon">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                </div>
+                <div class="brand-info">
+                    <h1>Traffic Benchmark Runner</h1>
+                    <p class="brand-tagline">Engine HTTP Keep-Alive siêu nhẹ & Adaptive Smart Pacing</p>
+                </div>
+            </div>
+
+            <div class="navbar-actions">
+                <div class="connection-status" id="wsStatus">
+                    <span class="status-dot"></span>
+                    <span class="status-label">Kết nối Live</span>
+                </div>
+                <button class="btn btn-secondary" id="btnQuickSample" title="Tạo chiến dịch mẫu test ngay hôm nay (04/10/2026)">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg> Mẫu hôm nay
+                </button>
+                <button class="btn btn-primary" id="btnOpenCreateModal">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Tạo chiến dịch
+                </button>
+            </div>
+        </header>
+
+        <!-- System Health Bar (Cloudflare Worker & Cron Monitor) -->
+        <section class="system-health-bar" id="systemHealthBar">
+            <div class="health-chip" id="chipWorker">
+                <span class="pulse-indicator online"></span>
+                <span class="chip-label">Worker:</span>
+                <span class="chip-val status-val-ok" id="healthWorkerVal">🟢 Online</span>
+            </div>
+            <div class="health-chip" id="chipCron">
+                <span class="pulse-indicator waiting" id="healthCronDot"></span>
+                <span class="chip-label">Cron:</span>
+                <span class="chip-val" id="healthCronVal">Đang kiểm tra...</span>
+            </div>
+            <div class="health-chip" id="chipStorage">
+                <span class="pulse-indicator online" id="healthStorageDot"></span>
+                <span class="chip-label">Storage:</span>
+                <span class="chip-val status-val-ok" id="healthStorageVal">🟢 KV Connected</span>
+            </div>
+            <div class="health-chip" id="chipScheduler">
+                <span class="pulse-indicator online" id="healthSchedulerDot"></span>
+                <span class="chip-label">Scheduler:</span>
+                <span class="chip-val status-val-ok" id="healthSchedulerVal">Active</span>
+            </div>
+            <div class="health-chip" id="chipBrowserless">
+                <span class="pulse-indicator online" id="healthBrowserlessDot"></span>
+                <span class="chip-label">Browserless QA:</span>
+                <span class="chip-val status-val-ok" id="healthBrowserlessVal">🟢 Connected (Chromium)</span>
+            </div>
+            <div class="health-chip" id="chipAccess">
+                <span class="pulse-indicator waiting" id="healthAccessDot"></span>
+                <span class="chip-label">Access:</span>
+                <span class="chip-val" id="healthAccessVal">Checking...</span>
+            </div>
+            <div class="health-chip chip-time" id="chipServerTime">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span class="chip-label">Giờ VN:</span>
+                <span class="chip-val" id="healthServerTimeVal">--:--:--</span>
+            </div>
+        </section>
+
+        <!-- Global Summary Metrics -->
+        <section class="overview-grid">
+            <div class="metric-card">
+                <div class="metric-icon metric-purple">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+                </div>
+                <div class="metric-body">
+                    <span class="metric-label">Tổng chiến dịch</span>
+                    <span class="metric-val" id="globalTotalCampaigns">0</span>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon metric-emerald">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg>
+                </div>
+                <div class="metric-body">
+                    <span class="metric-label">Đang chạy</span>
+                    <span class="metric-val" id="globalRunningCampaigns">0</span>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon metric-cyan">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+                </div>
+                <div class="metric-body">
+                    <span class="metric-label">Mục tiêu đạt được</span>
+                    <span class="metric-val" id="globalSuccessRequests">0</span>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon metric-indigo">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </div>
+                <div class="metric-body">
+                    <span class="metric-label">Tổng HTTP đã gửi</span>
+                    <span class="metric-val" id="globalTotalDispatched">0</span>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon metric-amber">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                </div>
+                <div class="metric-body">
+                    <span class="metric-label">Độ trễ TB</span>
+                    <span class="metric-val" id="globalAvgLatency">-- ms</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Main Workspace -->
+        <main class="main-layout">
+            <!-- Left: Campaign Management -->
+            <section class="campaigns-section">
+                <div class="section-header">
+                    <div class="section-title-wrap">
+                        <h2><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><polyline points="3 6 4 7 6 5"/><polyline points="3 12 4 13 6 11"/><polyline points="3 18 4 19 6 17"/></svg> Danh sách chiến dịch</h2>
+                        <span class="badge" id="campaignCountBadge">0 chiến dịch</span>
+                    </div>
+                </div>
+
+                <div class="campaigns-list" id="campaignsContainer">
+                    <!-- Dynamic Campaign Cards rendered by JS -->
+                    <div class="empty-state" id="emptyCampaignsState">
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg>
+                        <h3>Chưa có chiến dịch nào</h3>
+                        <p>Tạo chiến dịch mới để bắt đầu benchmark HTTP với thuật toán chia đều (Even) hoặc thông minh (Smart).</p>
+                        <div style="display: flex; gap: 12px; margin-top: 14px; flex-wrap: wrap; justify-content: center;">
+                            <button class="btn btn-primary" id="btnEmptyCreate">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg> Tạo chiến dịch mới
+                            </button>
+                            <button class="btn btn-secondary" id="btnEmptySample">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/></svg> Thêm chiến dịch mẫu (Chạy hôm nay)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right: Real-time Monitor & Distribution Chart -->
+            <aside class="monitor-section">
+                <div class="monitor-tabs">
+                    <button class="monitor-tab-btn active" data-tab="tabLogs">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg> Nhật ký Live
+                    </button>
+                    <button class="monitor-tab-btn" data-tab="tabChart">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> Biểu đồ phân bổ
+                    </button>
+                </div>
+
+                <!-- Tab 1: Live Logs -->
+                <div class="monitor-tab-content active" id="tabLogs">
+                    <div class="console-header">
+                        <div class="console-title">
+                            <span class="live-pulse"></span>
+                            <span>Stream HTTP Requests</span>
+                        </div>
+                        <div class="console-actions">
+                            <button class="btn-icon" id="btnClearLogs" title="Xóa logs">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="console-body" id="consoleLogs">
+                        <div class="console-empty">Đang chờ sự kiện requests...</div>
+                    </div>
+                </div>
+
+                <!-- Tab 2: Distribution Chart -->
+                <div class="monitor-tab-content" id="tabChart">
+                    <div class="chart-header">
+                        <div class="chart-title-wrap">
+                            <h3 id="chartCampaignTitle">Phân bổ nhịp độ theo giờ</h3>
+                            <p class="text-muted" id="chartCampaignSubtitle">Chọn một chiến dịch để xem biểu đồ</p>
+                        </div>
+                    </div>
+                    <div class="chart-summary-blocks" id="chartSummaryBlocks">
+                        <!-- Summary tags -->
+                    </div>
+                    <div class="chart-bars-wrap" id="chartBarsWrap">
+                        <!-- Hourly Bars -->
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- Create / Edit Campaign Modal -->
+    <div class="modal-backdrop" id="campaignModal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3 id="modalTitle"><i class="fa-solid fa-sliders"></i> Tạo chiến dịch mới</h3>
+                <button class="btn-close" id="btnCloseModal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+
+            <form id="campaignForm">
+                <input type="hidden" id="editCampaignId" value="">
+
+                <!-- Locked Campaign Alert Banner -->
+                <div class="locked-banner" id="modalLockedBanner" style="display: none;">
+                    <i class="fa-solid fa-lock"></i> <strong>Chiến dịch đã khởi chạy (Locked):</strong> Các thông số cốt lõi (URL, Target, Chế độ phân bổ, Engine, Proxy, Thời gian) đã bị khóa an toàn để tránh xung đột lịch trình. Nhấn <strong>Reset</strong> ngoài danh sách nếu bạn muốn cấu hình lại từ đầu.
+                </div>
+
+                <div class="form-group">
+                    <label for="inputName">Tên chiến dịch</label>
+                    <input type="text" id="inputName" placeholder="VD: Test tải 07:00-13:00" required>
+                </div>
+
+                <!-- Execution Mode Selector -->
+                <div class="form-group">
+                    <label>Chế độ thực thi (Engine Architecture)</label>
+                    <div class="segmented-control mode-selector" id="wrapExecutionMode">
+                        <label class="segment-opt">
+                            <input type="radio" name="executionMode" value="browser" checked>
+                            <span class="segment-label">
+                                <i class="fa-solid fa-globe"></i> 🌐 Browser QA (Chromium)
+                            </span>
+                        </label>
+                        <label class="segment-opt">
+                            <input type="radio" name="executionMode" value="http">
+                            <span class="segment-label">
+                                <i class="fa-solid fa-bolt"></i> ⚡ HTTP Subrequest (Siêu nhẹ)
+                            </span>
+                        </label>
+                    </div>
+                    <small class="field-hint" id="execModeHint">Browser QA: Render DOM/JS thật bằng Browserless.io Chromium. HTTP: Subrequest Cloudflare fetch() tốc độ cao.</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="inputTargetUrl">Website / API kiểm thử (URL)</label>
+                    <div class="input-with-action">
+                        <input type="url" id="inputTargetUrl" placeholder="https://your-site.example/api/test" required>
+                        <button type="button" class="btn btn-secondary" id="btnTestUrl">
+                            <i class="fa-solid fa-plug"></i> Test Ping
+                        </button>
+                    </div>
+                    <div class="ping-result" id="pingResult"></div>
+                </div>
+
+                <!-- DOM Interaction Scenario Engine for Browser Mode -->
+                <div class="form-group scenario-group" id="scenarioGroup">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <label style="margin: 0; font-weight: 600;"><i class="fa-solid fa-list-check"></i> Kịch bản tương tác DOM (Scenario Engine)</label>
+                        <button type="button" class="btn btn-secondary btn-xs" id="btnAddScenarioStep" style="padding: 3px 10px; font-size: 11px;">
+                            <i class="fa-solid fa-plus"></i> Thêm bước
+                        </button>
+                    </div>
+                    <div id="scenarioStepsContainer" style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px;">
+                        <!-- Injected by JS -->
+                    </div>
+                    <small class="field-hint">Định nghĩa chuỗi hành động Puppeteer tuần tự (mở trang, chờ selector, click, nhập liệu, assert chữ). Tự động lưu ảnh chụp nếu bước bị lỗi.</small>
+                </div>
+
+                <!-- Absolute Time-Slot Proxy Clock Manager -->
+                <div class="form-group proxy-config-group">
+                    <div class="proxy-header-row">
+                        <label for="inputProxyEnabled" class="proxy-label-wrap">
+                            <input type="checkbox" id="inputProxyEnabled">
+                            <span><i class="fa-solid fa-clock-rotate-left"></i> Đồng hồ Proxy Clock độc lập (Absolute Time Slots)</span>
+                        </label>
+                        <span class="badge">Proxy Clock</span>
+                    </div>
+                    <div id="proxyFieldsWrap" style="display: none; margin-top: 10px;">
+                        <div class="proxy-free-warning" id="proxyFreeWarning" style="display: none; margin-bottom: 10px; padding: 8px 12px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: var(--radius-sm); font-size: 11px; color: #fbbf24; line-height: 1.5;">
+                            <i class="fa-solid fa-triangle-exclamation"></i> <strong>Lưu ý Browserless Cloud Free:</strong> External proxy bên thứ ba yêu cầu gói Paid của Browserless.io (gói Free sẽ nhận HTTP 401 Unauthorized khi chạy Chromium). Nếu bạn dùng gói Free, vui lòng chuyển Engine sang <em>⚡ HTTP Subrequest</em> hoặc bỏ chọn proxy.
+                        </div>
+                        <div class="form-group" style="margin-bottom: 10px;">
+                            <label for="inputProxyGateways">Danh sách Pool Proxy / Gateway (Mỗi dòng một proxy)</label>
+                            <textarea id="inputProxyGateways" rows="3" placeholder="http://192.168.1.10:8080&#10;http://user:pass@10.0.0.5:3128" style="width: 100%; font-family: var(--font-mono); font-size: 12px; background: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 8px;"></textarea>
+                            <small class="field-hint">Hỗ trợ HTTP/HTTPS/SOCKS5 proxy hoặc Gateway URL (ví dụ: http://user:pass@ip:port hoặc gateway forwarder).</small>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label for="inputProxyInterval">Chu kỳ xoay vòng proxy (giây) — Mặc định 120s (2 phút)</label>
+                            <input type="number" id="inputProxyInterval" min="5" max="86400" value="120">
+                            <small class="field-hint">Proxy Clock độc lập: Tính theo thời gian tuyệt đối <code>slot = floor((now - base) / interval) % pool.length</code>. Các lượt click trong cùng cửa sổ 2 phút sẽ dùng chung proxy mà không cần đổi mỗi lượt.</small>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label for="inputTargetRequests">Tổng số requests</label>
+                        <input type="number" id="inputTargetRequests" min="1" max="100000" value="750" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Chế độ phân bổ</label>
+                        <div class="segmented-control" id="wrapScheduleMode">
+                            <label class="segment-opt">
+                                <input type="radio" name="scheduleMode" value="smart" checked>
+                                <span class="segment-label">
+                                    <i class="fa-solid fa-brain"></i> SMART (Nhịp điệu)
+                                </span>
+                            </label>
+                            <label class="segment-opt">
+                                <input type="radio" name="scheduleMode" value="even">
+                                <span class="segment-label">
+                                    <i class="fa-solid fa-scale-balanced"></i> EVEN (Chia đều)
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mode-desc-box" id="modeDescBox">
+                    <i class="fa-solid fa-circle-info"></i>
+                    <span id="modeDescText">SMART: Ít lúc sáng sớm → Tăng dần → Cao điểm trưa & chiều → Tự động tính toán lại nhịp nếu server bị lag.</span>
+                </div>
+
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label for="inputStartTime">Thời điểm bắt đầu</label>
+                        <input type="datetime-local" id="inputStartTime" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="inputEndTime">Thời điểm kết thúc</label>
+                        <input type="datetime-local" id="inputEndTime" required>
+                    </div>
+                </div>
+
+                <!-- Quick Preset Durations -->
+                <div class="quick-presets">
+                    <span class="quick-label">Cài nhanh:</span>
+                    <button type="button" class="btn-preset" data-hours="1">+ 1 giờ</button>
+                    <button type="button" class="btn-preset" data-hours="3">+ 3 giờ</button>
+                    <button type="button" class="btn-preset" data-hours="6" id="preset6h">+ 6 giờ (07h-13h)</button>
+                    <button type="button" class="btn-preset" data-hours="12">+ 12 giờ</button>
+                    <button type="button" class="btn-preset" data-hours="24">+ 24 giờ</button>
+                </div>
+
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label for="inputMaxConcurrent">Luồng đồng thời (Concurrency)</label>
+                        <input type="number" id="inputMaxConcurrent" min="1" max="20" value="3" required>
+                        <small class="field-hint">Số request gửi song song tối đa (Keep-Alive socket)</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="inputTimeoutMs">Timeout request (ms)</label>
+                        <input type="number" id="inputTimeoutMs" min="500" max="60000" step="500" value="8000" required>
+                        <small class="field-hint">Thời gian chờ tối đa cho mỗi HTTP request</small>
+                    </div>
+                </div>
+
+                <!-- Interactive Preview inside Modal -->
+                <div class="modal-preview-box">
+                    <div class="modal-preview-header">
+                        <span><i class="fa-solid fa-chart-column"></i> Xem trước nhịp phân bổ</span>
+                        <span class="preview-duration-badge" id="previewDurationBadge">0 giờ</span>
+                    </div>
+                    <div class="preview-bars" id="modalPreviewBars"></div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" id="btnCancelModal">Hủy bỏ</button>
+                    <button type="submit" class="btn btn-primary" id="btnSubmitModal">
+                        <i class="fa-solid fa-check"></i> Lưu chiến dịch
+                    </button>
+                </div>
+            </form>
         </div>
+    </div>
 
-        <div id="custom-panel" class="custom-panel hidden">
-          <h3>Custom theo khung giờ</h3>
-          <div class="grid custom-grid">
-            <label>00–06<select data-custom="night"><option value="low">Thấp</option><option value="medium">Vừa</option><option value="high">Cao</option></select></label>
-            <label>06–09<select data-custom="early_morning"><option value="low">Thấp</option><option value="medium" selected>Vừa</option><option value="high">Cao</option></select></label>
-            <label>09–12<select data-custom="morning"><option value="low">Thấp</option><option value="medium">Vừa</option><option value="high" selected>Cao</option></select></label>
-            <label>12–14<select data-custom="noon"><option value="low">Thấp</option><option value="medium" selected>Vừa</option><option value="high">Cao</option></select></label>
-            <label>14–18<select data-custom="afternoon"><option value="low">Thấp</option><option value="medium">Vừa</option><option value="high" selected>Cao</option></select></label>
-            <label>18–22<select data-custom="evening"><option value="low">Thấp</option><option value="medium">Vừa</option><option value="high" selected>Cao</option></select></label>
-            <label>22–24<select data-custom="late_night"><option value="low">Thấp</option><option value="medium" selected>Vừa</option><option value="high">Cao</option></select></label>
-          </div>
+    <!-- Screenshot Modal for Browser QA Failure Inspection -->
+    <div class="modal-backdrop" id="screenshotModal" style="display: none;">
+        <div class="modal-card" style="max-width: 820px;">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-camera"></i> Ảnh chụp sự cố Browser QA</h3>
+                <button class="btn-close" id="btnCloseScreenshotModal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div style="padding: 16px; text-align: center;">
+                <p id="screenshotCaption" class="text-muted" style="margin-bottom: 12px; font-size: 12px;">Ảnh màn hình Chromium tại thời điểm kịch bản gặp lỗi</p>
+                <img id="screenshotImg" src="" alt="Error Screenshot" style="max-width: 100%; max-height: 70vh; border-radius: var(--radius-sm); border: 1px solid var(--border-color); box-shadow: 0 8px 32px rgba(0,0,0,0.5);">
+            </div>
         </div>
+    </div>
 
-        <div id="preview" class="preview"></div>
-        <button>Tạo campaign</button>
-        <span id="error" class="error"></span>
-      </form>
-    </section>
+    <!-- Toast Notification Container -->
+    <div class="toast-container" id="toastContainer"></div>
 
-    <section class="card">
-      <div class="title-row"><h2>Campaigns</h2><button id="refresh" class="secondary compact">Làm mới</button></div>
-      <div id="campaigns" class="campaigns"></div>
-    </section>
-
-    <section class="card">
-      <h2>Log gần nhất</h2>
-      <div id="logs" class="logs"></div>
-    </section>
-  </main>
-  <script src="/socket.io/socket.io.js"></script>
-  <script type="module" src="/app.js"></script>
+    <!-- Scripts -->
+    <script src="/socket.io/socket.io.js" onerror="console.info('Chế độ Serverless / Cloudflare Worker: Socket.IO script không khả dụng, chuyển sang chế độ Live Polling.')"></script>
+    <script src="js/timeDistribution.js?v=4.0"></script>
+    <script src="js/app.js?v=4.0"></script>
 </body>
 </html>

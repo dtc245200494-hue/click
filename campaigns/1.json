@@ -1,0 +1,16 @@
+{
+    "name": "Chiến dịch Benchmark 1",
+    "targetUrl": "https://uanbidvak.com",
+    "targetRequests": 900,
+    "startTime": 1790212260000,
+    "endTime": 1790262000000,
+    "scheduleMode": "smart",
+    "timeoutMs": 8000,
+    "maxConcurrent": 3,
+    "status": "waiting",
+    "successRequests": 0,
+    "failedRequests": 0,
+    "totalDispatched": 0,
+    "actualStartTime": null,
+    "actualEndTime": null
+}

@@ -1,477 +1,853 @@
-import express from 'express';
-import http from 'node:http';
-import { Server } from 'socket.io';
-import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
+const express = require('express');
+const http = require('http');
+const https = require('https');
+const { Server } = require('socket.io');
+const path = require('path');
+const fs = require('fs');
 
-import { buildDistribution, generateSchedule } from './lib/scheduler.js';
-import { validateTargetUrl } from './lib/targetPolicy.js';
-import { requestOnce } from './lib/requestClient.js';
-import { RequestPool } from './lib/requestPool.js';
-import { countActiveWorkers, getGlobalFreeSlots } from './lib/capacity.js';
-import { StateStore } from './lib/stateStore.js';
-import { createAuthFromEnv } from './lib/auth.js';
-import { sendTelegramSummary } from './lib/telegram.js';
+const {
+    calculateAdaptiveNextInterval,
+    buildTimeDistribution,
+    formatDuration,
+    hasTimezoneOffset
+} = require('./timeDistribution');
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
 
-const HOST = process.env.HOST || '127.0.0.1';
-const PORT = Number(process.env.PORT || 3005);
-const MAX_CONCURRENCY = Math.max(1, Number(process.env.MAX_CONCURRENCY || 20));
-const MAX_CAMPAIGN_REQUESTS = Math.max(1, Number(process.env.MAX_CAMPAIGN_REQUESTS || 100000));
-const MIN_CAMPAIGN_SECONDS = Math.max(1, Number(process.env.MIN_CAMPAIGN_SECONDS || 60));
-const REQUEST_TIMEOUT_MS = Math.max(250, Number(process.env.REQUEST_TIMEOUT_MS || 15000));
-const MAX_RETRIES_PER_SLOT = Math.max(0, Math.min(5, Number(process.env.MAX_RETRIES_PER_SLOT || 2)));
-const RETRY_BACKOFF_MS = Math.max(250, Math.min(30000, Number(process.env.RETRY_BACKOFF_MS || 2000)));
-const STATE_FILE = process.env.STATE_FILE || path.join(__dirname, 'data', 'campaigns.json');
+const PORT = parseInt(process.env.PORT, 10) || 3005;
+const HOST = process.env.HOST || '127.0.0.1'; // Bảo mật: Chỉ bind localhost
 
-const auth = createAuthFromEnv(process.env);
-const store = new StateStore(STATE_FILE);
-const campaigns = new Map();
-let persistTimer = null;
-
-app.use(express.json({ limit: '64kb' }));
-app.use(express.urlencoded({ extended: false }));
-
-function percentile(values, p) {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  return Math.round(sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))]);
-}
-
-function publicCampaign(c) {
-  return {
-    id: c.id,
-    name: c.name,
-    targetUrl: c.targetUrl,
-    startTime: c.startTime,
-    endTime: c.endTime,
-    targetRequests: c.targetRequests,
-    mode: c.mode,
-    customBlocks: c.customBlocks,
-    concurrency: c.concurrency,
-    status: c.status,
-    scheduled: c.schedule.length,
-    dispatched: c.scheduleIdx,
-    attempted: c.attempted,
-    success: c.successfulSlots.size,
-    failedAttempts: c.failedAttempts,
-    exhaustedSlots: c.exhaustedSlots.size,
-    retryPending: c.retryQueue.length,
-    activeWorkers: c.pool.active,
-    globalActiveWorkers: countActiveWorkers(campaigns.values()),
-    globalMaxConcurrency: MAX_CONCURRENCY,
-    p50ApproxMs: percentile(c.latencies, 0.50),
-    p95ApproxMs: percentile(c.latencies, 0.95)
-  };
-}
-
-function serializeCampaign(c) {
-  return {
-    id: c.id,
-    name: c.name,
-    targetUrl: c.targetUrl,
-    startTime: c.startTime,
-    endTime: c.endTime,
-    targetRequests: c.targetRequests,
-    mode: c.mode,
-    customBlocks: c.customBlocks,
-    timezoneOffsetMinutes: c.timezoneOffsetMinutes,
-    concurrency: c.concurrency,
-    maxRetriesPerSlot: c.maxRetriesPerSlot,
-    retryBackoffMs: c.retryBackoffMs,
-    scheduleIdx: c.scheduleIdx,
-    attempted: c.attempted,
-    failedAttempts: c.failedAttempts,
-    successfulSlots: [...c.successfulSlots],
-    exhaustedSlots: [...c.exhaustedSlots],
-    inFlightJobs: [...c.inFlightJobs.entries()],
-    retryQueue: c.retryQueue,
-    latencies: c.latencies.slice(-1000),
-    logs: c.logs.slice(-100),
-    status: c.status,
-    createdAt: c.createdAt,
-    endedAt: c.endedAt || null,
-    telegramNotified: !!c.telegramNotified
-  };
-}
-
-function persistNow() {
-  if (persistTimer) {
-    clearTimeout(persistTimer);
-    persistTimer = null;
-  }
-  store.save([...campaigns.values()].map(serializeCampaign));
-}
-
-function schedulePersist() {
-  if (persistTimer) return;
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    persistNow();
-  }, 250);
-  persistTimer.unref?.();
-}
-
-function emitCampaign(c) {
-  io.emit('campaign-update', publicCampaign(c));
-}
-
-function log(c, message, type = 'info') {
-  const item = { campaignId: c.id, at: Date.now(), message, type };
-  c.logs.push(item);
-  if (c.logs.length > 300) c.logs.shift();
-  io.emit('campaign-log', item);
-  schedulePersist();
-}
-
-function normalizedStatus(snapshot) {
-  if (['completed', 'partial', 'stopped', 'expired'].includes(snapshot.status)) return snapshot.status;
-  if (Date.now() >= snapshot.endTime) return 'expired';
-  return Date.now() >= snapshot.startTime ? 'running' : 'waiting';
-}
-
-function makeCampaign(source) {
-  const mode = ['smart', 'even', 'custom'].includes(source.mode) ? source.mode : 'smart';
-  const schedule = generateSchedule({
-    startTime: source.startTime,
-    endTime: source.endTime,
-    targetRequests: source.targetRequests,
-    mode,
-    customBlocks: source.customBlocks || null,
-    timezoneOffsetMinutes: source.timezoneOffsetMinutes
-  });
-  const c = {
-    id: source.id || crypto.randomUUID(),
-    name: String(source.name || 'Campaign').slice(0, 80),
-    targetUrl: source.targetUrl,
-    startTime: Number(source.startTime),
-    endTime: Number(source.endTime),
-    targetRequests: Number(source.targetRequests),
-    mode,
-    customBlocks: source.customBlocks || null,
-    timezoneOffsetMinutes: Number.isFinite(Number(source.timezoneOffsetMinutes)) ? Number(source.timezoneOffsetMinutes) : null,
-    concurrency: Math.min(MAX_CONCURRENCY, Math.max(1, Number(source.concurrency || 10))),
-    maxRetriesPerSlot: Math.max(0, Math.min(5, Number(source.maxRetriesPerSlot ?? MAX_RETRIES_PER_SLOT))),
-    retryBackoffMs: Math.max(250, Math.min(30000, Number(source.retryBackoffMs ?? RETRY_BACKOFF_MS))),
-    schedule,
-    scheduleIdx: Math.max(0, Math.min(schedule.length, Number(source.scheduleIdx || 0))),
-    attempted: Math.max(0, Number(source.attempted || 0)),
-    failedAttempts: Math.max(0, Number(source.failedAttempts || 0)),
-    successfulSlots: new Set(Array.isArray(source.successfulSlots) ? source.successfulSlots : []),
-    exhaustedSlots: new Set(Array.isArray(source.exhaustedSlots) ? source.exhaustedSlots : []),
-    inFlightJobs: new Map(),
-    retryQueue: Array.isArray(source.retryQueue) ? source.retryQueue.filter(x => Number.isInteger(x.slotId)) : [],
-    latencies: Array.isArray(source.latencies) ? source.latencies.slice(-1000) : [],
-    logs: Array.isArray(source.logs) ? source.logs.slice(-100) : [],
-    status: normalizedStatus(source),
-    createdAt: Number(source.createdAt || Date.now()),
-    endedAt: source.endedAt || null,
-    telegramNotified: !!source.telegramNotified,
-    pool: new RequestPool(Math.min(MAX_CONCURRENCY, Math.max(1, Number(source.concurrency || 10)))),
-    tickBusy: false
-  };
-
-  if (!['completed', 'partial', 'stopped', 'expired'].includes(c.status)) {
-    for (const [slotId, attempt] of Array.isArray(source.inFlightJobs) ? source.inFlightJobs : []) {
-      if (!c.successfulSlots.has(slotId) && !c.exhaustedSlots.has(slotId)) {
-        c.retryQueue.push({ slotId: Number(slotId), attempt: Number(attempt || 0), dueAt: Date.now() });
-      }
+// ─── Socket.IO với CORS an toàn cho Localhost ──────────────────────────────────
+const io = new Server(server, {
+    cors: {
+        origin: (origin, callback) => {
+            // Cho phép request cùng origin hoặc không có origin (local, curl)
+            if (!origin) return callback(null, true);
+            try {
+                const parsed = new URL(origin);
+                const allowed = ['localhost', '127.0.0.1'];
+                if (allowed.includes(parsed.hostname)) {
+                    return callback(null, true);
+                }
+            } catch (e) {}
+            return callback(new Error('CORS disallowed'), false);
+        }
     }
-  }
-  return c;
-}
-
-for (const snapshot of store.load()) {
-  try {
-    const target = validateTargetUrl(snapshot.targetUrl);
-    if (!target.ok) continue;
-    const c = makeCampaign(snapshot);
-    campaigns.set(c.id, c);
-  } catch (error) {
-    console.error('[state] campaign restore failed:', error.message);
-  }
-}
-
-function requireAuth(req, res, next) {
-  req.user = auth.userFromCookie(req.headers.cookie || '');
-  const publicPath = req.path === '/login.html' || req.path === '/login.js' || req.path === '/style.css' || req.path === '/api/login' || req.path.startsWith('/socket.io/');
-  if (publicPath || req.user) return next();
-  if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'Unauthorized' });
-  return res.redirect('/login.html');
-}
-
-function requireAdmin(req, res, next) {
-  if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Chỉ admin được phép thay đổi campaign.' });
-  next();
-}
-
-app.use(requireAuth);
-
-app.post('/api/login', (req, res) => {
-  const result = auth.login(String(req.body?.username || ''), String(req.body?.password || ''));
-  if (!result) return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu.' });
-  if (auth.enabled) {
-    res.cookie('session_token', result.token, {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 30 * 24 * 3600 * 1000
-    });
-  }
-  res.json({ ok: true, user: result.user });
 });
 
-app.post('/api/logout', (req, res) => {
-  auth.logout(req.headers.cookie || '');
-  res.clearCookie('session_token', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production' });
-  res.json({ ok: true });
-});
-
-app.get('/api/me', (req, res) => {
-  const user = req.user || auth.userFromCookie(req.headers.cookie || '');
-  if (!user) return res.status(401).json({ error: 'Unauthorized' });
-  res.json({ user, authEnabled: auth.enabled });
-});
-
+// ─── Middleware ────────────────────────────────────────────────────────────────
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/api/campaigns', (_req, res) => {
-  res.json([...campaigns.values()].map(publicCampaign));
+// ─── HTTP Keep-Alive Agents ────────────────────────────────────────────────────
+const httpAgent = new http.Agent({
+    keepAlive: true,
+    maxSockets: 100,
+    keepAliveMsecs: 30000
 });
 
-app.post('/api/campaigns', requireAdmin, (req, res) => {
-  const body = req.body || {};
-  const targetCheck = validateTargetUrl(body.targetUrl);
-  if (!targetCheck.ok) return res.status(400).json({ error: targetCheck.reason });
-
-  const startTime = Number(body.startTime);
-  const endTime = Number(body.endTime);
-  const targetRequests = Number.parseInt(body.targetRequests, 10);
-  const concurrency = Math.min(MAX_CONCURRENCY, Math.max(1, Number.parseInt(body.concurrency, 10) || 10));
-  const mode = ['smart', 'even', 'custom'].includes(body.mode) ? body.mode : 'smart';
-  const customBlocks = mode === 'custom' && body.customBlocks && typeof body.customBlocks === 'object' ? body.customBlocks : null;
-  const timezoneOffsetMinutes = Number.isFinite(Number(body.timezoneOffsetMinutes)) ? Number(body.timezoneOffsetMinutes) : null;
-
-  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime) {
-    return res.status(400).json({ error: 'Khoảng thời gian không hợp lệ.' });
-  }
-  if ((endTime - startTime) / 1000 < MIN_CAMPAIGN_SECONDS) {
-    return res.status(400).json({ error: `Campaign phải kéo dài ít nhất ${MIN_CAMPAIGN_SECONDS}s.` });
-  }
-  if (!Number.isInteger(targetRequests) || targetRequests < 1 || targetRequests > MAX_CAMPAIGN_REQUESTS) {
-    return res.status(400).json({ error: `targetRequests phải trong 1..${MAX_CAMPAIGN_REQUESTS}.` });
-  }
-
-  const campaign = makeCampaign({
-    id: crypto.randomUUID(),
-    name: String(body.name || `Campaign ${campaigns.size + 1}`).slice(0, 80),
-    targetUrl: targetCheck.url.toString(),
-    startTime, endTime, targetRequests, mode, customBlocks, timezoneOffsetMinutes, concurrency,
-    maxRetriesPerSlot: body.maxRetriesPerSlot ?? MAX_RETRIES_PER_SLOT,
-    retryBackoffMs: body.retryBackoffMs ?? RETRY_BACKOFF_MS,
-    status: Date.now() >= startTime ? 'running' : 'waiting',
-    createdAt: Date.now()
-  });
-  if (campaign.schedule.length !== targetRequests) return res.status(500).json({ error: 'Không tạo được lịch chính xác.' });
-  campaigns.set(campaign.id, campaign);
-  log(campaign, `Đã tạo ${targetRequests} request, concurrency=${concurrency}, mode=${mode}.`, 'system');
-  persistNow();
-  emitCampaign(campaign);
-  res.status(201).json(publicCampaign(campaign));
+const httpsAgent = new https.Agent({
+    keepAlive: true,
+    maxSockets: 100,
+    keepAliveMsecs: 30000,
+    rejectUnauthorized: false // Cho phép test cả cert self-signed nội bộ
 });
 
-app.post('/api/campaigns/:id/stop', requireAdmin, (req, res) => {
-  const c = campaigns.get(req.params.id);
-  if (!c) return res.status(404).json({ error: 'Không tìm thấy campaign.' });
-  if (!['completed', 'partial', 'stopped', 'expired'].includes(c.status)) {
-    c.status = 'stopped';
-    c.endedAt = Date.now();
-    c.retryQueue.length = 0;
-    c.pool.stop();
-    log(c, 'Đã dừng campaign.', 'warn');
-    persistNow();
-    emitCampaign(c);
-  }
-  res.json(publicCampaign(c));
-});
+/**
+ * Super lightweight HTTP Request Executor with Keep-Alive
+ */
+function executeHttpRequest({ url, method = 'GET', timeoutMs = 8000, headers = {} }) {
+    return new Promise((resolve) => {
+        const startTime = Date.now();
+        let parsedUrl;
+        try {
+            parsedUrl = new URL(url);
+        } catch (err) {
+            return resolve({
+                success: false,
+                statusCode: null,
+                latencyMs: 0,
+                error: `Invalid URL: ${err.message}`
+            });
+        }
 
-app.get('/api/campaigns/:id/report', (req, res) => {
-  const c = campaigns.get(req.params.id);
-  if (!c) return res.status(404).send('Campaign not found');
-  const report = [
-    'CAMPAIGN REPORT',
-    `Name: ${c.name}`,
-    `Target URL: ${c.targetUrl}`,
-    `Status: ${c.status}`,
-    `Mode: ${c.mode}`,
-    `Start: ${new Date(c.startTime).toISOString()}`,
-    `End: ${new Date(c.endTime).toISOString()}`,
-    `Target requests: ${c.targetRequests}`,
-    `Successful slots: ${c.successfulSlots.size}`,
-    `Attempted HTTP requests: ${c.attempted}`,
-    `Failed attempts: ${c.failedAttempts}`,
-    `Exhausted slots: ${c.exhaustedSlots.size}`,
-    `p50 latency: ${percentile(c.latencies, 0.50) ?? 'N/A'} ms`,
-    `p95 latency: ${percentile(c.latencies, 0.95) ?? 'N/A'} ms`
-  ].join('\n');
-  res.type('text/plain').set('Content-Disposition', `attachment; filename="campaign-${c.id}.txt"`).send(report);
-});
+        const isHttps = parsedUrl.protocol === 'https:';
+        const client = isHttps ? https : http;
+        const agent = isHttps ? httpsAgent : httpAgent;
 
-app.get('/api/preview', (req, res) => {
-  let customBlocks = null;
-  if (req.query.customBlocks) {
-    try { customBlocks = JSON.parse(String(req.query.customBlocks)); } catch {}
-  }
-  res.json(buildDistribution({
-    startTime: Number(req.query.startTime),
-    endTime: Number(req.query.endTime),
-    targetRequests: Number(req.query.targetRequests),
-    mode: ['smart', 'even', 'custom'].includes(req.query.mode) ? req.query.mode : 'smart',
-    customBlocks,
-    timezoneOffsetMinutes: Number(req.query.timezoneOffsetMinutes)
-  }));
-});
+        const defaultHeaders = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 BenchmarkTester/2.0',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            ...headers
+        };
 
-app.get('/__local_test_target', (_req, res) => res.status(200).send('ok'));
+        const options = {
+            protocol: parsedUrl.protocol,
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port || (isHttps ? 443 : 80),
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: method.toUpperCase(),
+            headers: defaultHeaders,
+            agent,
+            timeout: timeoutMs
+        };
 
-function queueRetry(c, job) {
-  const nextAttempt = job.attempt + 1;
-  const dueAt = Date.now() + c.retryBackoffMs;
-  if (c.status === 'running' && nextAttempt <= c.maxRetriesPerSlot && dueAt < c.endTime) {
-    c.retryQueue.push({ slotId: job.slotId, attempt: nextAttempt, dueAt });
-    c.retryQueue.sort((a, b) => a.dueAt - b.dueAt);
-    log(c, `Slot ${job.slotId} lỗi, retry ${nextAttempt}/${c.maxRetriesPerSlot}.`, 'warn');
-  } else {
-    c.exhaustedSlots.add(job.slotId);
-    log(c, `Slot ${job.slotId} không thể retry thêm.`, 'error');
-  }
+        const req = client.request(options, (res) => {
+            // Drain stream to allow Keep-Alive socket reuse
+            res.on('data', () => {});
+            res.on('end', () => {
+                const latencyMs = Date.now() - startTime;
+                const success = res.statusCode >= 200 && res.statusCode < 400;
+                resolve({
+                    success,
+                    statusCode: res.statusCode,
+                    latencyMs,
+                    error: success ? null : `HTTP ${res.statusCode}`
+                });
+            });
+        });
+
+        req.on('timeout', () => {
+            req.destroy(new Error(`Timeout (${timeoutMs}ms)`));
+        });
+
+        req.on('error', (err) => {
+            const latencyMs = Date.now() - startTime;
+            resolve({
+                success: false,
+                statusCode: null,
+                latencyMs,
+                error: err.message
+            });
+        });
+
+        req.end();
+    });
 }
 
-async function runSlot(c, job) {
-  c.attempted += 1;
-  c.inFlightJobs.set(job.slotId, job.attempt);
-  schedulePersist();
-  emitCampaign(c);
+// ─── Campaigns State & Persistent Storage ──────────────────────────────────────
+const CAMPAIGNS_DIR = path.join(__dirname, 'campaigns');
+if (!fs.existsSync(CAMPAIGNS_DIR)) fs.mkdirSync(CAMPAIGNS_DIR, { recursive: true });
 
-  const result = await requestOnce(c.targetUrl, { timeoutMs: REQUEST_TIMEOUT_MS });
-  c.inFlightJobs.delete(job.slotId);
-  if (result.ok) {
-    c.successfulSlots.add(job.slotId);
-    c.exhaustedSlots.delete(job.slotId);
-  } else {
-    c.failedAttempts += 1;
-    queueRetry(c, job);
-  }
-  if (Number.isFinite(result.latencyMs)) {
-    c.latencies.push(result.latencyMs);
-    if (c.latencies.length > 5000) c.latencies.shift();
-  }
-  if (!result.ok) {
-    log(c, `Request lỗi${result.statusCode ? ` HTTP ${result.statusCode}` : ''}${result.error ? `: ${result.error}` : ''}`, 'error');
-  }
-  schedulePersist();
-  emitCampaign(c);
+const campaigns = new Map();
+const dirtyCampaigns = new Set();
+let persistDebounceTimer = null;
+
+function serializeCampaign(c) {
+    return {
+        name: c.config.name,
+        targetUrl: c.config.targetUrl,
+        targetRequests: c.targetRequests,
+        startTime: c.config.startTime,
+        endTime: c.config.endTime,
+        scheduleMode: c.config.scheduleMode,
+        timeoutMs: c.config.timeoutMs,
+        maxConcurrent: c.config.maxConcurrent,
+        timezoneOffsetMinutes: c.config.timezoneOffsetMinutes,
+        maxRetries: c.config.maxRetries,
+        status: c.status,
+        successRequests: c.successRequests,
+        failedRequests: c.failedRequests,
+        totalDispatched: c.totalDispatched,
+        actualStartTime: c.actualStartTime,
+        actualEndTime: c.actualEndTime
+    };
 }
 
-function terminalSlots(c) {
-  return c.successfulSlots.size + c.exhaustedSlots.size;
+function flushCampaignToDisk(id) {
+    const campaign = campaigns.get(id);
+    if (!campaign) return;
+    try {
+        const data = serializeCampaign(campaign);
+        const tempPath = path.join(CAMPAIGNS_DIR, `${id}.json.tmp`);
+        const targetPath = path.join(CAMPAIGNS_DIR, `${id}.json`);
+        fs.writeFileSync(tempPath, JSON.stringify(data, null, 4), 'utf-8');
+        fs.renameSync(tempPath, targetPath); // Ghi file nguyên tử (Atomic write)
+    } catch (e) {
+        console.error(`[Storage] Lỗi lưu chiến dịch ${id}:`, e.message);
+    }
 }
 
-function finalizeCampaign(c, forcedStatus = null) {
-  if (['completed', 'partial', 'stopped', 'expired'].includes(c.status)) return;
-  c.status = forcedStatus || (c.successfulSlots.size === c.targetRequests ? 'completed' : 'partial');
-  c.endedAt = Date.now();
-  c.retryQueue.length = 0;
-  c.pool.clearPending();
-  log(c, c.status === 'completed'
-    ? `Hoàn thành ${c.successfulSlots.size}/${c.targetRequests} slot.`
-    : `Kết thúc ${c.successfulSlots.size}/${c.targetRequests} slot thành công.`,
-  c.status === 'completed' ? 'success' : 'warn');
-  const shouldNotify = !c.telegramNotified;
-  if (shouldNotify) c.telegramNotified = true;
-  persistNow();
-  emitCampaign(c);
-  if (shouldNotify) sendTelegramSummary({ ...publicCampaign(c), name: c.name, status: c.status }).catch(() => {});
+function saveCampaignImmediate(id) {
+    dirtyCampaigns.delete(id);
+    flushCampaignToDisk(id);
 }
 
-async function tickCampaign(c) {
-  if (c.tickBusy || ['completed', 'partial', 'stopped', 'expired'].includes(c.status)) return;
-  c.tickBusy = true;
-  try {
+function markCampaignDirty(id) {
+    dirtyCampaigns.add(id);
+    if (!persistDebounceTimer) {
+        persistDebounceTimer = setTimeout(() => {
+            persistDebounceTimer = null;
+            for (const cid of dirtyCampaigns) {
+                flushCampaignToDisk(cid);
+            }
+            dirtyCampaigns.clear();
+        }, 1000); // Debounce 1s tránh nghẽn I/O đĩa
+    }
+}
+
+function flushAllCampaignsSync() {
+    if (persistDebounceTimer) {
+        clearTimeout(persistDebounceTimer);
+        persistDebounceTimer = null;
+    }
+    for (const [id, c] of campaigns.entries()) {
+        try {
+            const data = serializeCampaign(c);
+            fs.writeFileSync(path.join(CAMPAIGNS_DIR, `${id}.json`), JSON.stringify(data, null, 4), 'utf-8');
+        } catch (e) {}
+    }
+}
+
+process.on('SIGINT', () => {
+    console.log('\n[Process] Nhận SIGINT, lưu trạng thái chiến dịch trước khi thoát...');
+    flushAllCampaignsSync();
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    console.log('\n[Process] Nhận SIGTERM, lưu trạng thái chiến dịch trước khi thoát...');
+    flushAllCampaignsSync();
+    process.exit(0);
+});
+
+function createCampaignState(id, rawConfig) {
+    const targetRequests = parseInt(rawConfig.targetRequests || rawConfig.targetClicks, 10) || 100;
+    const startTime = typeof rawConfig.startTime === 'number' ? rawConfig.startTime : new Date(rawConfig.startTime).getTime();
+    const endTime = typeof rawConfig.endTime === 'number' ? rawConfig.endTime : new Date(rawConfig.endTime).getTime();
+    const scheduleMode = rawConfig.scheduleMode === 'even' ? 'even' : 'smart';
+    const timeoutMs = parseInt(rawConfig.timeoutMs, 10) || 8000;
+    const maxConcurrent = Math.max(1, Math.min(20, parseInt(rawConfig.maxConcurrent, 10) || 3));
+    const timezoneOffsetMinutes = hasTimezoneOffset(rawConfig.timezoneOffsetMinutes) ? Number(rawConfig.timezoneOffsetMinutes) : null;
+    const maxRetries = Number.isInteger(rawConfig.maxRetries) ? Math.max(0, Math.min(3, rawConfig.maxRetries)) : 1;
+
+    const config = {
+        name: rawConfig.name || `Chiến dịch ${id}`,
+        targetUrl: rawConfig.targetUrl || '',
+        targetRequests,
+        startTime,
+        endTime,
+        scheduleMode,
+        timeoutMs,
+        maxConcurrent,
+        timezoneOffsetMinutes,
+        maxRetries,
+        retryBackoffMs: 2000
+    };
+
+    // Khôi phục trạng thái đã chạy từ disk (Persistence)
+    const savedSuccess = parseInt(rawConfig.successRequests, 10) || 0;
+    const savedFailed = parseInt(rawConfig.failedRequests, 10) || 0;
+    const savedDispatched = parseInt(rawConfig.totalDispatched, 10) || (savedSuccess + savedFailed);
+    const savedActualStart = rawConfig.actualStartTime || null;
+    const savedActualEnd = rawConfig.actualEndTime || null;
+    const savedStatus = rawConfig.status;
+
     const now = Date.now();
-    if (c.status === 'waiting') {
-      if (now < c.startTime) return;
-      c.status = 'running';
-      log(c, 'Campaign bắt đầu.', 'system');
+    let status = 'waiting';
+
+    if (['completed', 'stopped', 'expired'].includes(savedStatus)) {
+        status = savedStatus;
+    } else if (savedSuccess >= targetRequests) {
+        status = 'completed';
+    } else if (now >= endTime) {
+        status = 'expired';
+    } else if (savedStatus === 'paused') {
+        status = 'paused';
+    } else if (now >= startTime) {
+        status = 'running';
     }
 
-    if (now >= c.endTime) {
-      c.retryQueue.length = 0;
-      if (c.pool.active === 0 && c.inFlightJobs.size === 0) {
-        finalizeCampaign(c, c.successfulSlots.size === c.targetRequests ? 'completed' : 'expired');
-      }
-      return;
-    }
-
-    const globalFreeSlots = getGlobalFreeSlots(campaigns.values(), MAX_CONCURRENCY);
-    let capacity = Math.min(c.pool.freeSlots, globalFreeSlots);
-
-    while (capacity > 0) {
-      const retryIndex = c.retryQueue.findIndex(job => job.dueAt <= Date.now() && !c.successfulSlots.has(job.slotId) && !c.inFlightJobs.has(job.slotId));
-      if (retryIndex >= 0) {
-        const job = c.retryQueue.splice(retryIndex, 1)[0];
-        c.inFlightJobs.set(job.slotId, job.attempt);
-        c.pool.enqueue(() => runSlot(c, job));
-        capacity -= 1;
-        continue;
-      }
-
-      if (c.scheduleIdx >= c.schedule.length || c.schedule[c.scheduleIdx] > Date.now()) break;
-      const slotId = c.scheduleIdx++;
-      if (c.successfulSlots.has(slotId) || c.exhaustedSlots.has(slotId) || c.inFlightJobs.has(slotId)) continue;
-      const job = { slotId, attempt: 0, dueAt: Date.now() };
-      c.inFlightJobs.set(slotId, 0);
-      c.pool.enqueue(() => runSlot(c, job));
-      capacity -= 1;
-    }
-
-    if (c.scheduleIdx >= c.schedule.length && terminalSlots(c) >= c.targetRequests && c.pool.active === 0 && c.retryQueue.length === 0 && c.inFlightJobs.size === 0) {
-      finalizeCampaign(c);
-    }
-    schedulePersist();
-    emitCampaign(c);
-  } finally {
-    c.tickBusy = false;
-  }
+    return {
+        id,
+        config,
+        status,
+        startTime,
+        endTime,
+        actualStartTime: savedActualStart || (status === 'running' ? now : null),
+        actualEndTime: savedActualEnd,
+        targetRequests,
+        successRequests: savedSuccess,
+        failedRequests: savedFailed,
+        totalDispatched: savedDispatched,
+        activeWorkers: 0,
+        nextScheduledTime: null,
+        lastScheduledIntervalMs: 0,
+        currentRatePerHour: 0,
+        latencyHistory: [],
+        retryQueue: [],
+        lastTickTime: now,
+        _tickRunning: false
+    };
 }
 
+function loadCampaignsFromDisk() {
+    try {
+        const files = fs.readdirSync(CAMPAIGNS_DIR).filter(f => f.endsWith('.json'));
+        for (const file of files) {
+            const id = file.replace('.json', '');
+            try {
+                const config = JSON.parse(fs.readFileSync(path.join(CAMPAIGNS_DIR, file), 'utf-8'));
+                if (!config.targetUrl || !config.startTime || !config.endTime) continue;
+                const state = createCampaignState(id, config);
+                campaigns.set(id, state);
+                console.log(`[Storage] Đã tải C${id}: ${state.config.name} (Tiến độ: ${state.successRequests}/${state.targetRequests}, Trạng thái: ${state.status})`);
+            } catch (e) {
+                console.error(`[Load] Lỗi đọc ${file}:`, e.message);
+            }
+        }
+        console.log(`[Storage] Đã tải tổng cộng ${campaigns.size} chiến dịch từ đĩa.`);
+    } catch (e) {
+        console.error('[Storage] Lỗi đọc thư mục campaigns:', e.message);
+    }
+}
+
+function deleteCampaignFile(id) {
+    try {
+        const p = path.join(CAMPAIGNS_DIR, `${id}.json`);
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch (e) {}
+}
+
+function generateCampaignId() {
+    const existingIds = Array.from(campaigns.keys()).map(Number).filter(n => !isNaN(n));
+    if (existingIds.length === 0) return '1';
+    return String(Math.max(...existingIds) + 1);
+}
+
+// ─── Real-time Logging & Socket.IO ─────────────────────────────────────────────
+function sendLog(campaignId, text, type = 'info', meta = null) {
+    const timestamp = new Date().toLocaleTimeString('vi-VN');
+    const logObj = { campaignId, text, type, timestamp, meta };
+    console.log(`[C${campaignId}][${type.toUpperCase()}] ${text}`);
+    io.emit('log', logObj);
+}
+
+function emitStats(campaignId) {
+    const campaign = campaigns.get(campaignId);
+    if (!campaign) return;
+
+    const now = Date.now();
+    const timeLeft = campaign.endTime ? Math.max(0, campaign.endTime - now) : 0;
+    const timeRemainingStr = formatDuration(timeLeft);
+    const etaStr = campaign.endTime ? new Date(campaign.endTime).toLocaleTimeString('vi-VN') : '--:--';
+
+    // Rolling avg latency
+    const recentLatencies = campaign.latencyHistory.slice(-20);
+    const avgLatencyMs = recentLatencies.length > 0
+        ? Math.round(recentLatencies.reduce((a, b) => a + b, 0) / recentLatencies.length)
+        : 0;
+
+    const remainingRequests = Math.max(0, campaign.targetRequests - campaign.successRequests);
+    const progressPercent = campaign.targetRequests > 0
+        ? Number(((campaign.successRequests / campaign.targetRequests) * 100).toFixed(1))
+        : 0;
+
+    io.emit('stats-update', {
+        campaignId,
+        status: campaign.status,
+        target: campaign.targetRequests,
+        success: campaign.successRequests,
+        failed: campaign.failedRequests,
+        totalDispatched: campaign.totalDispatched,
+        remaining: remainingRequests,
+        activeWorkers: campaign.activeWorkers,
+        maxConcurrent: campaign.config.maxConcurrent,
+        progressPercent,
+        avgLatencyMs,
+        currentRatePerHour: campaign.currentRatePerHour,
+        nextIntervalSec: campaign.lastScheduledIntervalMs ? Number((campaign.lastScheduledIntervalMs / 1000).toFixed(1)) : 0,
+        etaStr,
+        timeRemainingStr,
+        timeRemainingMs: timeLeft,
+        actualStartTime: campaign.actualStartTime,
+        actualEndTime: campaign.actualEndTime
+    });
+}
+
+function emitCampaignList() {
+    const list = [];
+    for (const [id, c] of campaigns.entries()) {
+        const remaining = Math.max(0, c.targetRequests - c.successRequests);
+        const progressPercent = c.targetRequests > 0 ? Number(((c.successRequests / c.targetRequests) * 100).toFixed(1)) : 0;
+        list.push({
+            id,
+            name: c.config.name,
+            targetUrl: c.config.targetUrl,
+            status: c.status,
+            targetRequests: c.targetRequests,
+            successRequests: c.successRequests,
+            failedRequests: c.failedRequests,
+            totalDispatched: c.totalDispatched,
+            remaining,
+            progressPercent,
+            scheduleMode: c.config.scheduleMode,
+            maxConcurrent: c.config.maxConcurrent,
+            timeoutMs: c.config.timeoutMs,
+            startTime: c.config.startTime,
+            endTime: c.config.endTime,
+            config: c.config
+        });
+    }
+    io.emit('campaigns-list', list);
+}
+
+// ─── Lifecycle Management ──────────────────────────────────────────────────────
+function completeCampaign(campaignId, reason) {
+    const campaign = campaigns.get(campaignId);
+    if (!campaign) return;
+    if (['stopped', 'completed', 'expired'].includes(campaign.status)) return;
+
+    campaign.status = reason;
+    campaign.actualEndTime = Date.now();
+    if (!campaign.actualStartTime) campaign.actualStartTime = campaign.startTime || Date.now();
+    campaign.retryQueue = [];
+    campaign.nextScheduledTime = null;
+
+    const messages = {
+        completed: `Chiến dịch ${campaignId} HOÀN THÀNH XUẤT SẮC! Đạt ${campaign.successRequests}/${campaign.targetRequests} thành công (Tổng gửi: ${campaign.totalDispatched} reqs).`,
+        expired: `Chiến dịch ${campaignId} ĐÃ HẾT GIỜ. Đạt ${campaign.successRequests}/${campaign.targetRequests} thành công (Tổng gửi: ${campaign.totalDispatched} reqs).`,
+        stopped: `Chiến dịch ${campaignId} ĐÃ DỪNG LẠI. Đạt ${campaign.successRequests}/${campaign.targetRequests} thành công (Tổng gửi: ${campaign.totalDispatched} reqs).`
+    };
+
+    sendLog(campaignId, messages[reason] || `Kết thúc: ${reason}`, reason === 'completed' ? 'success' : 'warn');
+    saveCampaignImmediate(campaignId);
+    io.emit('status-update', { campaignId, status: campaign.status, isRunning: false });
+    emitStats(campaignId);
+    emitCampaignList();
+}
+
+// ─── HTTP Request Dispatcher ──────────────────────────────────────────────────
+async function dispatchRequest(campaignId, isRetry = false, retryAttempt = 0) {
+    const campaign = campaigns.get(campaignId);
+    if (!campaign || campaign.status !== 'running') return;
+
+    // Chặn tuyệt đối không dispatch nếu số thành công + in-flight đã chạm mốc target!
+    if (campaign.successRequests + campaign.activeWorkers >= campaign.targetRequests) {
+        return;
+    }
+
+    campaign.activeWorkers++;
+    campaign.totalDispatched++;
+    markCampaignDirty(campaignId);
+    emitStats(campaignId);
+
+    const targetUrl = campaign.config.targetUrl;
+    const timeoutMs = campaign.config.timeoutMs || 8000;
+
+    try {
+        const result = await executeHttpRequest({
+            url: targetUrl,
+            method: 'GET',
+            timeoutMs
+        });
+
+        if (result.success) {
+            campaign.successRequests++;
+            campaign.latencyHistory.push(result.latencyMs);
+            if (campaign.latencyHistory.length > 50) campaign.latencyHistory.shift();
+
+            sendLog(campaignId, `[200 OK] ${targetUrl} (${result.latencyMs}ms)`, 'success', {
+                statusCode: result.statusCode,
+                latencyMs: result.latencyMs,
+                isRetry
+            });
+
+            // Nếu đạt đúng target: Hủy ngay hàng đợi retry để tránh bắn dư bất kỳ request nào!
+            if (campaign.successRequests >= campaign.targetRequests) {
+                campaign.retryQueue = [];
+                campaign.nextScheduledTime = null;
+            }
+        } else {
+            campaign.failedRequests++;
+            sendLog(campaignId, `[Lỗi] ${targetUrl}: ${result.error || `HTTP ${result.statusCode}`} (${result.latencyMs}ms)`, 'error', {
+                statusCode: result.statusCode,
+                error: result.error,
+                latencyMs: result.latencyMs
+            });
+
+            // Kiểm tra điều kiện retry an toàn:
+            // Chỉ retry nếu tổng thành công + in-flight CHƯA chạm target!
+            const remainingNeeded = campaign.targetRequests - (campaign.successRequests + campaign.activeWorkers);
+            const nextAttempt = retryAttempt + 1;
+            const retryAt = Date.now() + (campaign.config.retryBackoffMs || 2000);
+
+            if (remainingNeeded > 0 && nextAttempt <= (campaign.config.maxRetries || 1) && retryAt < campaign.endTime) {
+                campaign.retryQueue.push({
+                    attempt: nextAttempt,
+                    dueAt: retryAt
+                });
+                sendLog(campaignId, `Sẽ thử lại lần ${nextAttempt}/${campaign.config.maxRetries} sau 2s...`, 'warn');
+            }
+        }
+    } catch (err) {
+        campaign.failedRequests++;
+        sendLog(campaignId, `[Ngoại lệ] ${err.message}`, 'error');
+    } finally {
+        campaign.activeWorkers = Math.max(0, campaign.activeWorkers - 1);
+        markCampaignDirty(campaignId);
+        emitStats(campaignId);
+
+        // Kiểm tra điều kiện hoàn thành
+        if (campaign.successRequests >= campaign.targetRequests) {
+            completeCampaign(campaignId, 'completed');
+        } else if (Date.now() >= campaign.endTime && campaign.activeWorkers === 0) {
+            completeCampaign(campaignId, campaign.successRequests >= campaign.targetRequests ? 'completed' : 'expired');
+        }
+    }
+}
+
+// ─── Adaptive Engine Tick ──────────────────────────────────────────────────────
+async function tickCampaign(campaignId) {
+    const campaign = campaigns.get(campaignId);
+    if (!campaign) return;
+    if (['stopped', 'completed', 'expired', 'paused'].includes(campaign.status)) return;
+
+    if (campaign._tickRunning) return;
+    campaign._tickRunning = true;
+
+    try {
+        const now = Date.now();
+
+        // 1. Completion check
+        if (campaign.successRequests >= campaign.targetRequests) {
+            completeCampaign(campaignId, 'completed');
+            return;
+        }
+
+        // 2. Waiting check
+        if (campaign.status === 'waiting') {
+            if (now >= campaign.startTime) {
+                campaign.status = 'running';
+                campaign.actualStartTime = now;
+                saveCampaignImmediate(campaignId);
+                sendLog(campaignId, `Bắt đầu chạy chiến dịch! Mục tiêu: ${campaign.targetRequests} requests thành công.`, 'info');
+                io.emit('status-update', { campaignId, status: 'running', isRunning: true });
+                emitCampaignList();
+            } else {
+                emitStats(campaignId);
+                return;
+            }
+        }
+
+        // 3. Expire check
+        if (now >= campaign.endTime) {
+            if (campaign.activeWorkers === 0) {
+                completeCampaign(campaignId, campaign.successRequests >= campaign.targetRequests ? 'completed' : 'expired');
+            }
+            emitStats(campaignId);
+            return;
+        }
+
+        // 4. Dọn các retry đã quá hạn kết thúc chiến dịch
+        campaign.retryQueue = campaign.retryQueue.filter(r => r.dueAt < campaign.endTime);
+
+        // 5. Kiểm tra giới hạn luồng đồng thời (Concurrency)
+        const maxConcurrent = campaign.config.maxConcurrent || 3;
+        if (campaign.activeWorkers >= maxConcurrent) {
+            emitStats(campaignId);
+            return;
+        }
+
+        // 6. KIỂM TRA QUOTA AN TOÀN CHỐNG VƯỢT TARGET:
+        // Tính tổng số request còn thiếu để chạm mốc Target:
+        const remainingSlots = campaign.targetRequests - (campaign.successRequests + campaign.activeWorkers);
+        if (remainingSlots <= 0) {
+            // Số success + in-flight đã đủ để cán đích! Không dispatch thêm bất cứ request hay retry nào!
+            campaign.retryQueue = [];
+            return;
+        }
+
+        // 7. Xử lý retry an toàn (Retry queue)
+        const dueRetryIndex = campaign.retryQueue.findIndex(r => r.dueAt <= now);
+        if (dueRetryIndex >= 0 && campaign.activeWorkers < maxConcurrent && remainingSlots > 0) {
+            const retryJob = campaign.retryQueue.splice(dueRetryIndex, 1)[0];
+            dispatchRequest(campaignId, true, retryJob.attempt);
+            return;
+        }
+
+        // 8. Thuật toán Adaptive Smart/Even Scheduler
+        const adaptive = calculateAdaptiveNextInterval({
+            now,
+            endTime: campaign.endTime,
+            remainingRequests: remainingSlots,
+            mode: campaign.config.scheduleMode,
+            timezoneOffsetMinutes: campaign.config.timezoneOffsetMinutes
+        });
+
+        if (!adaptive.valid) return;
+
+        campaign.currentRatePerHour = adaptive.currentRatePerHour;
+        campaign.lastScheduledIntervalMs = adaptive.idealIntervalMs;
+
+        // Nếu đã đến lịch bắn request tiếp theo:
+        if (campaign.nextScheduledTime === null || now >= campaign.nextScheduledTime) {
+            campaign.nextScheduledTime = now + adaptive.jitteredIntervalMs;
+            dispatchRequest(campaignId, false, 0);
+        }
+
+        emitStats(campaignId);
+
+    } finally {
+        campaign._tickRunning = false;
+    }
+}
+
+// Global master ticker (250ms)
 setInterval(() => {
-  for (const c of campaigns.values()) tickCampaign(c).catch(err => log(c, `Scheduler error: ${err.message}`, 'error'));
-}, 200).unref();
+    for (const id of campaigns.keys()) {
+        tickCampaign(id).catch(err => {
+            console.error(`[Scheduler] Lỗi tick C${id}:`, err.message);
+        });
+    }
+}, 250);
 
-io.use((socket, next) => {
-  const user = auth.userFromCookie(socket.handshake.headers.cookie || '');
-  if (!user) return next(new Error('Unauthorized'));
-  socket.user = user;
-  next();
+// ─── REST APIs ─────────────────────────────────────────────────────────────────
+
+// Danh sách chiến dịch
+app.get('/api/campaigns', (req, res) => {
+    const list = [];
+    for (const [id, c] of campaigns.entries()) {
+        const remaining = Math.max(0, c.targetRequests - c.successRequests);
+        const progressPercent = c.targetRequests > 0 ? Number(((c.successRequests / c.targetRequests) * 100).toFixed(1)) : 0;
+        list.push({
+            id,
+            name: c.config.name,
+            targetUrl: c.config.targetUrl,
+            status: c.status,
+            targetRequests: c.targetRequests,
+            successRequests: c.successRequests,
+            failedRequests: c.failedRequests,
+            totalDispatched: c.totalDispatched,
+            remaining,
+            progressPercent,
+            scheduleMode: c.config.scheduleMode,
+            maxConcurrent: c.config.maxConcurrent,
+            timeoutMs: c.config.timeoutMs,
+            startTime: c.config.startTime,
+            endTime: c.config.endTime,
+            actualStartTime: c.actualStartTime,
+            actualEndTime: c.actualEndTime,
+            config: c.config
+        });
+    }
+    res.json({ success: true, data: list });
 });
 
-io.on('connection', (socket) => {
-  socket.emit('session', { user: socket.user, authEnabled: auth.enabled });
-  socket.emit('campaigns-snapshot', [...campaigns.values()].map(publicCampaign));
+// Tạo chiến dịch mới
+app.post('/api/campaigns', (req, res) => {
+    try {
+        const body = req.body;
+        if (!body.targetUrl) {
+            return res.status(400).json({ success: false, message: 'targetUrl là bắt buộc' });
+        }
+
+        let parsed;
+        try {
+            parsed = new URL(body.targetUrl);
+            if (!['http:', 'https:'].includes(parsed.protocol)) {
+                return res.status(400).json({ success: false, message: 'Chỉ hỗ trợ giao thức http hoặc https' });
+            }
+        } catch (e) {
+            return res.status(400).json({ success: false, message: 'targetUrl không hợp lệ' });
+        }
+
+        const id = generateCampaignId();
+        const state = createCampaignState(id, body);
+        campaigns.set(id, state);
+        saveCampaignImmediate(id);
+
+        sendLog(id, `Đã tạo chiến dịch mới: "${state.config.name}" (${state.config.targetRequests} reqs, ${state.config.scheduleMode.toUpperCase()})`, 'info');
+        emitCampaignList();
+        emitStats(id);
+
+        res.json({ success: true, id, campaign: state.config });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
 });
 
-process.on('SIGTERM', () => { try { persistNow(); } finally { process.exit(0); } });
-process.on('SIGINT', () => { try { persistNow(); } finally { process.exit(0); } });
+// Cập nhật chiến dịch
+app.put('/api/campaigns/:id', (req, res) => {
+    const id = req.params.id;
+    const campaign = campaigns.get(id);
+    if (!campaign) {
+        return res.status(404).json({ success: false, message: 'Chiến dịch không tồn tại' });
+    }
+
+    try {
+        const body = req.body;
+        const newConfig = {
+            ...campaign.config,
+            name: body.name !== undefined ? body.name : campaign.config.name,
+            targetUrl: body.targetUrl || campaign.config.targetUrl,
+            targetRequests: parseInt(body.targetRequests, 10) || campaign.config.targetRequests,
+            startTime: body.startTime ? (typeof body.startTime === 'number' ? body.startTime : new Date(body.startTime).getTime()) : campaign.config.startTime,
+            endTime: body.endTime ? (typeof body.endTime === 'number' ? body.endTime : new Date(body.endTime).getTime()) : campaign.config.endTime,
+            scheduleMode: body.scheduleMode === 'even' ? 'even' : 'smart',
+            timeoutMs: parseInt(body.timeoutMs, 10) || campaign.config.timeoutMs,
+            maxConcurrent: Math.max(1, Math.min(20, parseInt(body.maxConcurrent, 10) || campaign.config.maxConcurrent)),
+            timezoneOffsetMinutes: hasTimezoneOffset(body.timezoneOffsetMinutes) ? Number(body.timezoneOffsetMinutes) : campaign.config.timezoneOffsetMinutes
+        };
+
+        campaign.config = newConfig;
+        campaign.targetRequests = newConfig.targetRequests;
+        campaign.startTime = newConfig.startTime;
+        campaign.endTime = newConfig.endTime;
+        saveCampaignImmediate(id);
+
+        sendLog(id, `Cập nhật cấu hình chiến dịch thành công`, 'info');
+        emitCampaignList();
+        emitStats(id);
+
+        res.json({ success: true, campaign: newConfig });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+// Xóa chiến dịch
+app.delete('/api/campaigns/:id', (req, res) => {
+    const id = req.params.id;
+    if (!campaigns.has(id)) {
+        return res.status(404).json({ success: false, message: 'Chiến dịch không tồn tại' });
+    }
+
+    campaigns.delete(id);
+    deleteCampaignFile(id);
+    emitCampaignList();
+    res.json({ success: true, message: `Đã xóa chiến dịch ${id}` });
+});
+
+// Bắt đầu / Tiếp tục chiến dịch
+app.post('/api/campaigns/:id/start', (req, res) => {
+    const id = req.params.id;
+    const campaign = campaigns.get(id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Chiến dịch không tồn tại' });
+
+    const now = Date.now();
+    if (now >= campaign.endTime) {
+        return res.status(400).json({ success: false, message: 'Chiến dịch đã quá giờ kết thúc' });
+    }
+
+    campaign.status = now >= campaign.startTime ? 'running' : 'waiting';
+    if (campaign.status === 'running' && !campaign.actualStartTime) {
+        campaign.actualStartTime = now;
+    }
+    campaign.nextScheduledTime = null; // Re-evaluate ngay lập tức
+
+    saveCampaignImmediate(id);
+    sendLog(id, `Khởi động/Tiếp tục chiến dịch`, 'info');
+    emitCampaignList();
+    emitStats(id);
+    res.json({ success: true, status: campaign.status });
+});
+
+// Tạm dừng chiến dịch
+app.post('/api/campaigns/:id/pause', (req, res) => {
+    const id = req.params.id;
+    const campaign = campaigns.get(id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Chiến dịch không tồn tại' });
+
+    campaign.status = 'paused';
+    saveCampaignImmediate(id);
+    sendLog(id, `Tạm dừng chiến dịch`, 'warn');
+    emitCampaignList();
+    emitStats(id);
+    res.json({ success: true, status: 'paused' });
+});
+
+// Dừng hẳn chiến dịch
+app.post('/api/campaigns/:id/stop', (req, res) => {
+    const id = req.params.id;
+    completeCampaign(id, 'stopped');
+    res.json({ success: true, status: 'stopped' });
+});
+
+// Reset tiến trình chiến dịch
+app.post('/api/campaigns/:id/reset', (req, res) => {
+    const id = req.params.id;
+    const campaign = campaigns.get(id);
+    if (!campaign) return res.status(404).json({ success: false, message: 'Chiến dịch không tồn tại' });
+
+    campaign.successRequests = 0;
+    campaign.failedRequests = 0;
+    campaign.totalDispatched = 0;
+    campaign.latencyHistory = [];
+    campaign.retryQueue = [];
+    campaign.nextScheduledTime = null;
+    campaign.actualEndTime = null;
+
+    const now = Date.now();
+    if (now >= campaign.endTime) campaign.status = 'expired';
+    else if (now >= campaign.startTime) {
+        campaign.status = 'running';
+        campaign.actualStartTime = now;
+    } else {
+        campaign.status = 'waiting';
+        campaign.actualStartTime = null;
+    }
+
+    saveCampaignImmediate(id);
+    sendLog(id, `Đã làm mới (reset) tiến trình chiến dịch`, 'info');
+    emitCampaignList();
+    emitStats(id);
+    res.json({ success: true, status: campaign.status });
+});
+
+// API Xem trước phân bổ nhịp
+app.get('/api/preview-distribution', (req, res) => {
+    try {
+        const { startTime, endTime, targetRequests, mode, timezoneOffsetMinutes } = req.query;
+        const dist = buildTimeDistribution({
+            startTime: Number(startTime),
+            endTime: Number(endTime),
+            targetClicks: parseInt(targetRequests, 10),
+            mode: mode || 'smart',
+            timezoneOffsetMinutes: hasTimezoneOffset(timezoneOffsetMinutes) ? Number(timezoneOffsetMinutes) : null
+        });
+        res.json({ success: true, data: dist });
+    } catch (e) {
+        res.status(500).json({ success: false, message: e.message });
+    }
+});
+
+// API Test Ping URL kiểm thử kết nối an toàn
+app.post('/api/test-url', async (req, res) => {
+    const { url, timeoutMs = 5000 } = req.body;
+    if (!url || typeof url !== 'string') {
+        return res.status(400).json({ success: false, message: 'URL là bắt buộc và phải là chuỗi' });
+    }
+
+    let parsed;
+    try {
+        parsed = new URL(url);
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+            return res.status(400).json({ success: false, message: 'Chỉ hỗ trợ giao thức http hoặc https' });
+        }
+    } catch (err) {
+        return res.status(400).json({ success: false, message: 'Định dạng URL không hợp lệ' });
+    }
+
+    const result = await executeHttpRequest({
+        url: parsed.href,
+        timeoutMs: Math.min(15000, Math.max(1000, parseInt(timeoutMs, 10) || 5000))
+    });
+    res.json(result);
+});
+
+// ─── Khởi động Server ──────────────────────────────────────────────────────────
+loadCampaignsFromDisk();
 
 server.listen(PORT, HOST, () => {
-  console.log(`Scheduled Loadtest Dashboard: http://${HOST}:${PORT}`);
-  console.log(`Campaigns restored: ${campaigns.size}; global concurrency cap: ${MAX_CONCURRENCY}`);
-  if (!auth.enabled) console.log('AUTH_ENABLED=false: local session runs as admin. Enable auth before exposing through a reverse proxy.');
-  if (!process.env.ALLOWED_TARGET_HOSTS) console.log('External targets are disabled. Set ALLOWED_TARGET_HOSTS to exact authorized hostnames.');
+    console.log(`\n======================================================`);
+    console.log(`🚀 TRAFFIC BENCHMARK RUNNER 2.0 (SUPER LIGHTWEIGHT)`);
+    console.log(`📡 Dashboard đang chạy tại: http://${HOST}:${PORT}`);
+    console.log(`🔒 Bảo mật: Chỉ lắng nghe cục bộ trên ${HOST}`);
+    console.log(`⚡ Sẵn sàng chạy load test HTTP với Even & Smart Distribution`);
+    console.log(`======================================================\n`);
 });

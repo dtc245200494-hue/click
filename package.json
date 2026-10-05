@@ -1,17 +1,21 @@
 {
-  "name": "scheduled-loadtest-dashboard",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "Scheduled HTTP load-test dashboard derived from ideas in alexfernandez/loadtest, with campaign scheduling and capped concurrency.",
-  "license": "MIT",
+  "name": "traffic-benchmark-runner",
+  "version": "2.0.0",
+  "description": "Super lightweight HTTP load test & benchmark scheduler with Even & Adaptive Smart distribution",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node test/all.js"
+    "test": "node test_distribution.js"
   },
-  "engines": {
-    "node": ">=18"
-  },
+  "keywords": [
+    "http-benchmark",
+    "load-test",
+    "scheduler",
+    "smart-distribution"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1",
     "socket.io": "^4.8.3"

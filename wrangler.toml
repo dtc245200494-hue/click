@@ -1,0 +1,25 @@
+name = "click-runner"
+main = "worker.js"
+compatibility_date = "2024-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[triggers]
+crons = ["* * * * *"]
+
+
+[[kv_namespaces]]
+binding = "CAMPAIGNS_KV"
+id = "e638341dfe054b49be277a0dd3780983"
+
+[[durable_objects.bindings]]
+name = "CAMPAIGN_RUNNER"
+class_name = "CampaignRunnerDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CampaignRunnerDO"]
+
