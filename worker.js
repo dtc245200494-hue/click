@@ -261,6 +261,9 @@ function sanitizeCampaignForClient(campaign) {
         if (Array.isArray(copy.proxyConfig.gateways)) {
             copy.proxyConfig.gateways = copy.proxyConfig.gateways.map(sanitizeProxyGateway);
         }
+        if (Array.isArray(copy.proxyConfig.proxyPool)) {
+            copy.proxyConfig.proxyPool = copy.proxyConfig.proxyPool.map(sanitizeProxyGateway);
+        }
         if (copy.proxyConfig.currentGateway) {
             copy.proxyConfig.currentGateway = sanitizeProxyGateway(copy.proxyConfig.currentGateway);
         }
@@ -283,18 +286,41 @@ let lastCronState = null;
 
 // ─── HTTP Subrequest Runner ───────────────────────────────────────────────────
 
-async function executeWorkerRequest(url, timeoutMs = 8000) {
+async function executeWorkerRequest(url, timeoutMs = 8000, gatewayUrl = null) {
     const startTime = Date.now();
     try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
-        const response = await fetch(url, {
+
+        let fetchUrl = url;
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Connection': 'keep-alive'
+        };
+
+        if (gatewayUrl && typeof gatewayUrl === 'string') {
+            const cleanGw = gatewayUrl.trim();
+            if (cleanGw.includes('{url}')) {
+                fetchUrl = cleanGw.replace('{url}', encodeURIComponent(url));
+            } else if (cleanGw.includes('%s')) {
+                fetchUrl = cleanGw.replace('%s', encodeURIComponent(url));
+            } else if (cleanGw.startsWith('http://') || cleanGw.startsWith('https://')) {
+                try {
+                    const u = new URL(cleanGw);
+                    if (u.pathname.length > 1 || u.search) {
+                        fetchUrl = `${cleanGw}${cleanGw.includes('?') ? '&' : '?'}url=${encodeURIComponent(url)}`;
+                    } else {
+                        headers['X-Forwarded-Target'] = url;
+                        headers['X-Proxy-Target'] = url;
+                    }
+                } catch (_) {}
+            }
+        }
+
+        const response = await fetch(fetchUrl, {
             method: 'GET',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Connection': 'keep-alive'
-            },
+            headers,
             signal: controller.signal
         });
         clearTimeout(timer);
@@ -490,35 +516,66 @@ async function executeBrowserlessJob(url, token, options = {}) {
     }
 }
 
-// ─── Decoupled Proxy / Gateway Manager ────────────────────────────────────────
+// ─── Absolute Time-Slot Proxy Clock Manager ─────────────────────────────────
+// Proxy clock operates on an absolute time-grid independent of request cadence:
+// slot = floor((now - proxyRotationBaseAt) / proxyRotationIntervalMs)
+// proxyIndex = slot % proxyPool.length
+// Multiple requests within the same slot share the same proxy naturally.
 
-function checkAndRotateProxy(campaign) {
+function resolveProxyClock(campaign, now = Date.now()) {
     if (!campaign.proxyConfig || !campaign.proxyConfig.enabled) {
         return null;
     }
     const cfg = campaign.proxyConfig;
-    const gateways = Array.isArray(cfg.gateways)
+    const gateways = (Array.isArray(cfg.gateways) && cfg.gateways.length > 0)
         ? cfg.gateways.map(g => (typeof g === 'string' ? g.trim() : '')).filter(Boolean)
-        : [];
+        : ((Array.isArray(cfg.proxyPool) && cfg.proxyPool.length > 0)
+            ? cfg.proxyPool.map(g => (typeof g === 'string' ? g.trim() : '')).filter(Boolean)
+            : []);
+
     if (gateways.length === 0) {
         cfg.currentGateway = null;
         return null;
     }
 
-    const now = Date.now();
-    const intervalMs = Math.max(10, parseInt(cfg.rotationIntervalSec, 10) || 300) * 1000;
-
-    if (!cfg.lastRotatedAt || !cfg.currentGateway || (now - cfg.lastRotatedAt) >= intervalMs) {
-        const nextIdx = cfg.currentGateway ? ((cfg.currentIndex || 0) + 1) % gateways.length : 0;
-        cfg.currentIndex = nextIdx;
-        cfg.currentGateway = gateways[nextIdx];
-        cfg.lastRotatedAt = now;
-        cfg.nextRotationAt = now + intervalMs;
-    } else {
-        cfg.nextRotationAt = cfg.lastRotatedAt + intervalMs;
+    // Anchor proxy rotation base time
+    if (!cfg.proxyRotationBaseAt) {
+        cfg.proxyRotationBaseAt = campaign.actualStartTime || campaign.startTime || now;
     }
 
-    return cfg.currentGateway;
+    // Default interval: 2 minutes (120 seconds = 120,000 ms)
+    const intervalSec = Math.max(5, parseInt(cfg.rotationIntervalSec, 10) || 120);
+    const intervalMs = cfg.proxyRotationIntervalMs || (intervalSec * 1000);
+    cfg.rotationIntervalSec = intervalSec;
+    cfg.proxyRotationIntervalMs = intervalMs;
+
+    // Absolute time slot formula: slot = floor((now - base) / interval)
+    const elapsed = Math.max(0, now - cfg.proxyRotationBaseAt);
+    const slot = Math.floor(elapsed / intervalMs);
+    const proxyIndex = slot % gateways.length;
+
+    const currentGateway = gateways[proxyIndex];
+    const nextRotationAt = cfg.proxyRotationBaseAt + (slot + 1) * intervalMs;
+
+    cfg.currentSlot = slot;
+    cfg.currentIndex = proxyIndex;
+    cfg.currentGateway = currentGateway;
+    cfg.nextRotationAt = nextRotationAt;
+    cfg.lastComputedAt = now;
+
+    return {
+        activeGateway: currentGateway,
+        slot,
+        proxyIndex,
+        totalProxies: gateways.length,
+        nextRotationAt,
+        timeRemainingMs: Math.max(0, nextRotationAt - now)
+    };
+}
+
+function checkAndRotateProxy(campaign, now = Date.now()) {
+    const clock = resolveProxyClock(campaign, now);
+    return clock ? clock.activeGateway : null;
 }
 
 // ─── Cloudflare Durable Object: CampaignRunnerDO ─────────────────────────────
@@ -616,8 +673,9 @@ export class CampaignRunnerDO {
             let plannedIntervalMs = Math.max(minInterval, adaptive.jitteredIntervalMs || 5000);
             plannedIntervalMs = Math.min(plannedIntervalMs, Math.max(minInterval, campaign.endTime - dispatchStartedAt));
 
-            // Decoupled Gateway / Proxy rotation (checked before each alarm tick)
-            const activeGateway = checkAndRotateProxy(campaign);
+            // Decoupled Absolute Time-Slot Proxy Clock (evaluated at dispatchStartedAt)
+            const clockInfo = resolveProxyClock(campaign, dispatchStartedAt);
+            const activeGateway = clockInfo ? clockInfo.activeGateway : null;
 
             // Execute based on executionMode: 'browser' (Chromium via Browserless.io) or 'http' (Cloudflare fetch)
             let res;
@@ -640,7 +698,7 @@ export class CampaignRunnerDO {
                     campaign.lastErrorScreenshot = null;
                 }
             } else {
-                res = await executeWorkerRequest(campaign.targetUrl, campaign.timeoutMs || 8000);
+                res = await executeWorkerRequest(campaign.targetUrl, campaign.timeoutMs || 8000, activeGateway);
             }
 
             const jobFinishedAt = Date.now();
@@ -670,7 +728,8 @@ export class CampaignRunnerDO {
 
             if (!Array.isArray(campaign.recentLogs)) campaign.recentLogs = [];
             const modeTag = mode === 'browser' ? '🌐 Browser QA' : '⚡ HTTP';
-            const gwInfo = activeGateway ? ` [GW: ${sanitizeProxyGateway(activeGateway)}]` : '';
+            const slotInfo = clockInfo ? ` [Slot #${clockInfo.slot} P${clockInfo.proxyIndex + 1}/${clockInfo.totalProxies}]` : '';
+            const gwInfo = activeGateway ? ` [GW: ${sanitizeProxyGateway(activeGateway)}${slotInfo}]` : '';
             const titleInfo = (mode === 'browser' && res.pageTitle) ? ` • "${res.pageTitle}"` : '';
 
             campaign.recentLogs.push({
@@ -680,6 +739,7 @@ export class CampaignRunnerDO {
                 success: res.success,
                 mode,
                 gateway: activeGateway ? sanitizeProxyGateway(activeGateway) : null,
+                slot: clockInfo ? clockInfo.slot : null,
                 pageTitle: res.pageTitle || null,
                 seq: nextSeq,
                 text: res.success
@@ -864,9 +924,10 @@ export class CampaignRunnerDO {
                 campaign.lastErrorScreenshot = null;
                 campaign.lastGateway = null;
                 if (campaign.proxyConfig) {
+                    campaign.proxyConfig.currentSlot = 0;
                     campaign.proxyConfig.currentIndex = 0;
                     campaign.proxyConfig.currentGateway = null;
-                    campaign.proxyConfig.lastRotatedAt = null;
+                    campaign.proxyConfig.proxyRotationBaseAt = null;
                     campaign.proxyConfig.nextRotationAt = null;
                 }
                 campaign.actualStartTime = null;
@@ -1336,10 +1397,13 @@ async function handleFetch(request, env, ctx) {
             proxyConfig: {
                 enabled: false,
                 gateways: [],
-                rotationIntervalSec: 300,
+                proxyPool: [],
+                rotationIntervalSec: 120,
+                proxyRotationIntervalMs: 120000,
+                proxyRotationBaseAt: now,
+                currentSlot: 0,
                 currentIndex: 0,
                 currentGateway: null,
-                lastRotatedAt: null,
                 nextRotationAt: null
             },
             timeoutMs: 15000,
@@ -1404,22 +1468,28 @@ async function handleFetch(request, env, ctx) {
                 ? body.proxyConfig.gateways
                 : (typeof body.proxyConfig?.gateways === 'string'
                     ? body.proxyConfig.gateways.split('\n').map(s => s.trim()).filter(Boolean)
-                    : []);
+                    : (Array.isArray(body.proxyConfig?.proxyPool) ? body.proxyConfig.proxyPool : []));
+            const rotationIntervalSec = Math.max(5, parseInt(body.proxyConfig?.rotationIntervalSec, 10) || 120);
+            const isStartNow = (Number(body.startTime) || Date.now()) <= Date.now();
+            const baseTime = isStartNow ? Date.now() : (Number(body.startTime) || Date.now());
+
             const proxyConfig = {
                 enabled: Boolean(body.proxyConfig?.enabled && rawGateways.length > 0),
                 gateways: rawGateways,
-                rotationIntervalSec: Math.max(10, parseInt(body.proxyConfig?.rotationIntervalSec, 10) || 300),
+                proxyPool: rawGateways,
+                rotationIntervalSec,
+                proxyRotationIntervalMs: rotationIntervalSec * 1000,
+                proxyRotationBaseAt: baseTime,
+                currentSlot: 0,
                 currentIndex: 0,
-                currentGateway: null,
-                lastRotatedAt: null,
-                nextRotationAt: null
+                currentGateway: rawGateways[0] || null,
+                nextRotationAt: baseTime + (rotationIntervalSec * 1000)
             };
 
             const scenario = (executionMode === 'browser' && Array.isArray(body.scenario) && body.scenario.length > 0)
                 ? body.scenario
                 : null;
 
-            const isStartNow = (Number(body.startTime) || Date.now()) <= Date.now();
             const newCampaign = {
                 id: nextId,
                 name: body.name || `Chiến dịch ${nextId}`,
@@ -1642,6 +1712,13 @@ async function handleFetch(request, env, ctx) {
                 campaign.lastStepLogs = [];
                 campaign.lastErrorScreenshot = null;
                 campaign.lastGateway = null;
+                if (campaign.proxyConfig) {
+                    campaign.proxyConfig.currentSlot = 0;
+                    campaign.proxyConfig.currentIndex = 0;
+                    campaign.proxyConfig.currentGateway = null;
+                    campaign.proxyConfig.proxyRotationBaseAt = null;
+                    campaign.proxyConfig.nextRotationAt = null;
+                }
                 campaign.actualStartTime = null;
                 campaign.actualEndTime = null;
                 campaign.recentLogs = [];

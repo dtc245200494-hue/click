@@ -478,9 +478,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 ${proxyEnabled ? `
                 <div class="campaign-proxy-row">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
-                    <span>Proxy: <strong>${c.lastGateway ? c.lastGateway.replace(/:\/\/[^@]*@/, '://***@') : (c.proxyConfig.currentGateway ? c.proxyConfig.currentGateway.replace(/:\/\/[^@]*@/, '://***@') : 'Đang khởi tạo...')}</strong></span>
-                    <span style="opacity: 0.7; font-size: 11px;">(Xoay mỗi ${c.proxyConfig.rotationIntervalSec || 300}s)</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                    <span>Proxy Clock: <strong>${c.lastGateway ? c.lastGateway.replace(/:\/\/[^@]*@/, '://***@') : (c.proxyConfig?.currentGateway ? c.proxyConfig.currentGateway.replace(/:\/\/[^@]*@/, '://***@') : 'Đang khởi tạo...')}</strong></span>
+                    <span style="opacity: 0.85; font-size: 11px; background: rgba(255,255,255,0.08); padding: 1px 6px; border-radius: 4px;">Slot #${c.proxyConfig?.currentSlot !== undefined ? c.proxyConfig.currentSlot : 0} • Xoay mỗi ${c.proxyConfig?.rotationIntervalSec ? (c.proxyConfig.rotationIntervalSec >= 60 ? Math.round(c.proxyConfig.rotationIntervalSec / 60) + ' phút' : c.proxyConfig.rotationIntervalSec + 's') : '2 phút'}</span>
                 </div>
                 ` : ''}
 
@@ -927,7 +927,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (inputProxyEnabled) inputProxyEnabled.checked = false;
         if (proxyFieldsWrap) proxyFieldsWrap.style.display = 'none';
         if (inputProxyGateways) inputProxyGateways.value = '';
-        if (inputProxyInterval) inputProxyInterval.value = 300;
+        if (inputProxyInterval) inputProxyInterval.value = 120;
 
         currentScenarioSteps = [
             { action: 'waitForSelector', selector: 'body', timeout: 5000 }
@@ -972,7 +972,7 @@ document.addEventListener('DOMContentLoaded', () => {
             inputProxyGateways.value = Array.isArray(c.proxyConfig?.gateways) ? c.proxyConfig.gateways.join('\n') : '';
         }
         if (inputProxyInterval) {
-            inputProxyInterval.value = c.proxyConfig?.rotationIntervalSec || 300;
+            inputProxyInterval.value = c.proxyConfig?.rotationIntervalSec || 120;
         }
 
         if (Array.isArray(c.scenario) && c.scenario.length > 0) {
@@ -1166,7 +1166,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 proxyConfig: {
                     enabled: Boolean(inputProxyEnabled && inputProxyEnabled.checked),
                     gateways: inputProxyGateways ? inputProxyGateways.value.split('\n').map(s => s.trim()).filter(Boolean) : [],
-                    rotationIntervalSec: parseInt(inputProxyInterval?.value, 10) || 300
+                    proxyPool: inputProxyGateways ? inputProxyGateways.value.split('\n').map(s => s.trim()).filter(Boolean) : [],
+                    rotationIntervalSec: parseInt(inputProxyInterval?.value, 10) || 120
                 },
                 startTime: startMs,
                 endTime: endMs,

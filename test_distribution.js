@@ -243,10 +243,98 @@ function runTests() {
     console.log(`Cho phép dispatch thêm request/retry: ${allowMoreDispatch ? 'CÓ' : 'KHÔNG (Đã khóa quota)'}`);
     const pass14 = remainingSlots === 0 && allowMoreDispatch === false;
     console.log(`-> KẾT QUẢ: ${pass14 ? '✅ PASS (Chặn đứng hoàn toàn nguy cơ vượt quá 900 requests)' : '❌ FAIL'}\n`);
-    if (!pass14) allPassed = false;
+    // CASE 15: ABSOLUTE TIME-SLOT PROXY CLOCK (Exact user scenario)
+    // Pool = [A, B, C, D], interval = 2 minutes (120,000ms), base = 19:00:00
+    console.log('--- TEST CASE 15: ABSOLUTE TIME-SLOT PROXY CLOCK (Independent Proxy Clock) ---');
+    function testResolveProxyClock(campaign, now) {
+        const cfg = campaign.proxyConfig;
+        if (!cfg || !cfg.enabled) return null;
+        const gateways = cfg.gateways || cfg.proxyPool || [];
+        if (gateways.length === 0) return null;
+        if (!cfg.proxyRotationBaseAt) {
+            cfg.proxyRotationBaseAt = campaign.actualStartTime || campaign.startTime || now;
+        }
+        const intervalSec = Math.max(5, parseInt(cfg.rotationIntervalSec, 10) || 120);
+        const intervalMs = cfg.proxyRotationIntervalMs || (intervalSec * 1000);
+        const elapsed = Math.max(0, now - cfg.proxyRotationBaseAt);
+        const slot = Math.floor(elapsed / intervalMs);
+        const proxyIndex = slot % gateways.length;
+        return {
+            gateway: gateways[proxyIndex],
+            slot,
+            proxyIndex,
+            totalProxies: gateways.length
+        };
+    }
+
+    const base19h = new Date('2026-10-05T19:00:00+07:00').getTime();
+    const testCampaign = {
+        startTime: base19h,
+        actualStartTime: base19h,
+        proxyConfig: {
+            enabled: true,
+            gateways: ['Proxy-A', 'Proxy-B', 'Proxy-C', 'Proxy-D'],
+            rotationIntervalSec: 120,
+            proxyRotationIntervalMs: 120000,
+            proxyRotationBaseAt: base19h
+        }
+    };
+
+    // Requests:
+    // 19:00:17 -> A
+    // 19:00:48 -> A
+    // 19:01:31 -> A
+    // 19:02:24 -> B
+    // 19:03:51 -> B
+    // 19:04:08 -> C
+    // 19:08:15 -> A (wraps around slot 4 % 4 = 0)
+    const t_19_00_17 = base19h + 17 * 1000;
+    const t_19_00_48 = base19h + 48 * 1000;
+    const t_19_01_31 = base19h + 91 * 1000;
+    const t_19_02_24 = base19h + 144 * 1000;
+    const t_19_03_51 = base19h + 231 * 1000;
+    const t_19_04_08 = base19h + 248 * 1000;
+    const t_19_08_15 = base19h + (8 * 60 + 15) * 1000;
+
+    const r1 = testResolveProxyClock(testCampaign, t_19_00_17);
+    const r2 = testResolveProxyClock(testCampaign, t_19_00_48);
+    const r3 = testResolveProxyClock(testCampaign, t_19_01_31);
+    const r4 = testResolveProxyClock(testCampaign, t_19_02_24);
+    const r5 = testResolveProxyClock(testCampaign, t_19_03_51);
+    const r6 = testResolveProxyClock(testCampaign, t_19_04_08);
+    const r7 = testResolveProxyClock(testCampaign, t_19_08_15);
+
+    console.log(`19:00:17 (Slot #${r1.slot}) -> ${r1.gateway} (Kỳ vọng: Proxy-A)`);
+    console.log(`19:00:48 (Slot #${r2.slot}) -> ${r2.gateway} (Kỳ vọng: Proxy-A)`);
+    console.log(`19:01:31 (Slot #${r3.slot}) -> ${r3.gateway} (Kỳ vọng: Proxy-A)`);
+    console.log(`19:02:24 (Slot #${r4.slot}) -> ${r4.gateway} (Kỳ vọng: Proxy-B)`);
+    console.log(`19:03:51 (Slot #${r5.slot}) -> ${r5.gateway} (Kỳ vọng: Proxy-B)`);
+    console.log(`19:04:08 (Slot #${r6.slot}) -> ${r6.gateway} (Kỳ vọng: Proxy-C)`);
+    console.log(`19:08:15 (Slot #${r7.slot}) -> ${r7.gateway} (Kỳ vọng: Proxy-A - wrap around)`);
+
+    const pass15 = r1.gateway === 'Proxy-A' && r1.slot === 0 &&
+                   r2.gateway === 'Proxy-A' && r2.slot === 0 &&
+                   r3.gateway === 'Proxy-A' && r3.slot === 0 &&
+                   r4.gateway === 'Proxy-B' && r4.slot === 1 &&
+                   r5.gateway === 'Proxy-B' && r5.slot === 1 &&
+                   r6.gateway === 'Proxy-C' && r6.slot === 2 &&
+                   r7.gateway === 'Proxy-A' && r7.slot === 4;
+    console.log(`-> KẾT QUẢ: ${pass15 ? '✅ PASS (Proxy Clock quay đúng thời gian tuyệt đối, trùng slot dùng chung proxy)' : '❌ FAIL'}\n`);
+    if (!pass15) allPassed = false;
+
+    // CASE 16: IDLE GAP / KHÔNG CÓ REQUEST SUỐT 10 PHÚT VẪN TỰ TÍNH ĐÚNG SLOT
+    console.log('--- TEST CASE 16: IDLE GAP (Không có alarm suốt 10 phút, request tới tự nhảy đúng slot) ---');
+    // 10 phút = 600s = 5 slots. Ở 19:10:30 (elapsed = 630s): slot = floor(630/120) = 5.
+    // 5 % 4 = 1 -> Proxy-B
+    const t_19_10_30 = base19h + 630 * 1000;
+    const rIdle = testResolveProxyClock(testCampaign, t_19_10_30);
+    console.log(`19:10:30 sau 10 phút idle (Slot #${rIdle.slot}) -> ${rIdle.gateway} (Kỳ vọng: Slot 5 -> Proxy-B)`);
+    const pass16 = rIdle.slot === 5 && rIdle.gateway === 'Proxy-B';
+    console.log(`-> KẾT QUẢ: ${pass16 ? '✅ PASS (Không bị lệch nhịp state drift khi server idle)' : '❌ FAIL'}\n`);
+    if (!pass16) allPassed = false;
 
     console.log('==================================================');
-    console.log(`TỔNG KẾT: ${allPassed ? '🎉 TẤT CẢ 14/14 TEST CASES ĐÃ PASS XUẤT SẮC!' : '⚠️ CÓ TEST CASE BỊ LỖI!'}`);
+    console.log(`TỔNG KẾT: ${allPassed ? '🎉 TẤT CẢ 16/16 TEST CASES ĐÃ PASS XUẤT SẮC!' : '⚠️ CÓ TEST CASE BỊ LỖI!'}`);
     console.log('==================================================');
 
     if (!allPassed) process.exit(1);

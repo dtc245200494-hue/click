@@ -278,28 +278,28 @@
                     <small class="field-hint">Định nghĩa chuỗi hành động Puppeteer tuần tự (mở trang, chờ selector, click, nhập liệu, assert chữ). Tự động lưu ảnh chụp nếu bước bị lỗi.</small>
                 </div>
 
-                <!-- Decoupled Proxy / Gateway Manager -->
+                <!-- Absolute Time-Slot Proxy Clock Manager -->
                 <div class="form-group proxy-config-group">
                     <div class="proxy-header-row">
                         <label for="inputProxyEnabled" class="proxy-label-wrap">
                             <input type="checkbox" id="inputProxyEnabled">
-                            <span><i class="fa-solid fa-shuffle"></i> Xoay vòng Proxy / Gateway</span>
+                            <span><i class="fa-solid fa-clock-rotate-left"></i> Đồng hồ Proxy Clock độc lập (Absolute Time Slots)</span>
                         </label>
-                        <span class="badge">Decoupled Manager</span>
+                        <span class="badge">Proxy Clock</span>
                     </div>
                     <div id="proxyFieldsWrap" style="display: none; margin-top: 10px;">
                         <div class="proxy-free-warning" id="proxyFreeWarning" style="display: none; margin-bottom: 10px; padding: 8px 12px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: var(--radius-sm); font-size: 11px; color: #fbbf24; line-height: 1.5;">
                             <i class="fa-solid fa-triangle-exclamation"></i> <strong>Lưu ý Browserless Cloud Free:</strong> External proxy bên thứ ba yêu cầu gói Paid của Browserless.io (gói Free sẽ nhận HTTP 401 Unauthorized khi chạy Chromium). Nếu bạn dùng gói Free, vui lòng chuyển Engine sang <em>⚡ HTTP Subrequest</em> hoặc bỏ chọn proxy.
                         </div>
                         <div class="form-group" style="margin-bottom: 10px;">
-                            <label for="inputProxyGateways">Danh sách Gateway Proxies (Mỗi dòng một proxy)</label>
+                            <label for="inputProxyGateways">Danh sách Pool Proxy / Gateway (Mỗi dòng một proxy)</label>
                             <textarea id="inputProxyGateways" rows="3" placeholder="http://192.168.1.10:8080&#10;http://user:pass@10.0.0.5:3128" style="width: 100%; font-family: var(--font-mono); font-size: 12px; background: var(--bg-input); color: var(--text-main); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 8px;"></textarea>
-                            <small class="field-hint">Hỗ trợ HTTP/HTTPS/SOCKS5 proxy (với hoặc không có user:pass).</small>
+                            <small class="field-hint">Hỗ trợ HTTP/HTTPS/SOCKS5 proxy hoặc Gateway URL (ví dụ: http://user:pass@ip:port hoặc gateway forwarder).</small>
                         </div>
                         <div class="form-group" style="margin-bottom: 0;">
-                            <label for="inputProxyInterval">Chu kỳ xoay vòng proxy (giây)</label>
-                            <input type="number" id="inputProxyInterval" min="10" max="86400" value="300">
-                            <small class="field-hint">Ví dụ: 300s = 5 phút tự động chuyển gateway tiếp theo trước mỗi alarm tick.</small>
+                            <label for="inputProxyInterval">Chu kỳ xoay vòng proxy (giây) — Mặc định 120s (2 phút)</label>
+                            <input type="number" id="inputProxyInterval" min="5" max="86400" value="120">
+                            <small class="field-hint">Proxy Clock độc lập: Tính theo thời gian tuyệt đối <code>slot = floor((now - base) / interval) % pool.length</code>. Các lượt click trong cùng cửa sổ 2 phút sẽ dùng chung proxy mà không cần đổi mỗi lượt.</small>
                         </div>
                     </div>
                 </div>
